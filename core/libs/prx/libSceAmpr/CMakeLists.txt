@@ -29,6 +29,8 @@ if(BUILD_TESTING)
     target_link_libraries(guest_ampr_threads_tests PRIVATE libSceAmpr libkernel libc)
     configure_windows_unwind(guest_ampr_threads_tests)
     add_test(NAME guest_ampr_threads COMMAND guest_ampr_threads_tests)
+    set_tests_properties(guest_ampr_threads guest_ampr_markers guest_amm_placement
+        PROPERTIES TIMEOUT 30 LABELS "module-functional;module:libSceAmpr")
     if(WIN32)
         set_tests_properties(guest_ampr_threads PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceAmpr>")
