@@ -63,6 +63,7 @@ double APS5_VABI expm1_nid_postfix(double);
 float APS5_VABI logbf_nid_postfix(float);
 double APS5_VABI exp2_nid_postfix(double);
 float APS5_VABI __powisf2_nid_postfix(float, int);
+double APS5_VABI __powidf2_nid_postfix(double, int);
 double APS5_VABI ldexp_nid_postfix(double, int);
 double APS5_VABI scalbn_nid_postfix(double, int);
 float APS5_VABI scalbnf_nid_postfix(float, int);
@@ -542,6 +543,58 @@ static void CheckDoubleRounding(double value, std::int64_t expected, bool invali
     }
 }
 
+static void CheckIntegerPower() {
+    const auto infinity = std::numeric_limits<double>::infinity();
+    const auto nan = std::numeric_limits<double>::quiet_NaN();
+    constexpr int maximum = std::numeric_limits<int>::max();
+    constexpr int minimum = std::numeric_limits<int>::min();
+    const auto close = [](double actual, double expected) {
+        return std::abs(actual - expected) <= 64 * std::numeric_limits<double>::epsilon() * std::abs(expected);
+    };
+    Require(__powidf2_nid_postfix(2., 10) == 1024. && __powidf2_nid_postfix(-2., 3) == -8. && __powidf2_nid_postfix(-2., 4) == 16.);
+    Require(__powidf2_nid_postfix(2., 1023) == std::ldexp(1., 1023) && __powidf2_nid_postfix(2., 1024) == infinity);
+    Require(__powidf2_nid_postfix(-1., maximum) == -1. && std::isnan(__powidf2_nid_postfix(nan, 2)));
+    for (const double base : {3., 0., -0., infinity, nan}) Require(__powidf2_nid_postfix(base, 0) == 1.);
+    Require(__powidf2_nid_postfix(2., -1) == 0.5 && __powidf2_nid_postfix(2., -2) == 0.25 && __powidf2_nid_postfix(-2., -3) == -0.125);
+    Require(__powidf2_nid_postfix(0., -1) == infinity && __powidf2_nid_postfix(-0., -1) == -infinity);
+    Require(__powidf2_nid_postfix(2., -1023) == std::pow(2., -1023) && __powidf2_nid_postfix(2., -1023) == std::ldexp(1., -1023));
+    Require(std::pow(2., -1024) == std::ldexp(1., -1024) && __powidf2_nid_postfix(2., -1024) == 0.);
+    Require(std::pow(2., -1074) == std::numeric_limits<double>::denorm_min() && __powidf2_nid_postfix(2., -1074) == 0.);
+    Require(__powidf2_nid_postfix(10., -400) == 0. && std::pow(10., -400) == 0.);
+    Require(__powidf2_nid_postfix(2., minimum) == 0. && __powidf2_nid_postfix(0.5, minimum) == infinity && __powidf2_nid_postfix(1., minimum) == 1.);
+    Require(__powidf2_nid_postfix(-1., minimum) == 1.);
+    for (const auto value : {__powidf2_nid_postfix(-0., 3), __powidf2_nid_postfix(-infinity, -3)})
+        Require(value == 0.0 && std::signbit(value));
+    for (const auto value : {__powidf2_nid_postfix(-0., 4), __powidf2_nid_postfix(-infinity, -4)})
+        Require(value == 0.0 && !std::signbit(value));
+    Require(__powidf2_nid_postfix(-infinity, 3) == -infinity && __powidf2_nid_postfix(-infinity, 4) == infinity);
+    Require(__powidf2_nid_postfix(std::numeric_limits<double>::denorm_min(), 1) == std::numeric_limits<double>::denorm_min());
+    auto* error = __error_nid_postfix();
+    const int savedError = *error;
+    *error = 0x1234;
+    std::feclearexcept(FE_ALL_EXCEPT);
+    Require(__powidf2_nid_postfix(0., -1) == infinity);
+    Require((std::fetestexcept(FE_DIVBYZERO) & FE_DIVBYZERO) != 0 && *error == 0x1234);
+    std::feclearexcept(FE_ALL_EXCEPT);
+    Require(__powidf2_nid_postfix(2., 1024) == infinity);
+    Require((std::fetestexcept(FE_OVERFLOW) & FE_OVERFLOW) != 0 && *error == 0x1234);
+    std::feclearexcept(FE_ALL_EXCEPT);
+    *error = savedError;
+    volatile double powerBase = 1.1;
+    const double square = powerBase * powerBase;
+    Require(__powidf2_nid_postfix(powerBase, 4) == square * square);
+    Require(__powidf2_nid_postfix(powerBase, 5) == powerBase * (square * square));
+    Require(__powidf2_nid_postfix(powerBase, -4) == 1. / (square * square));
+    for (const double base : {1.1, -0.7, 3.7, 1e-3}) {
+        for (int exponent = -40; exponent <= 40; ++exponent) {
+            if (!close(__powidf2_nid_postfix(base, exponent), std::pow(base, exponent))) {
+                std::fprintf(stderr, "Guest __powidf2 failed for %g^%d\n", base, exponent);
+                std::abort();
+            }
+        }
+    }
+}
+
 static void CheckFloatRounding(float value, std::int64_t expected, bool invalid) {
     for (const bool useLlround : {false, true}) {
         std::feclearexcept(FE_ALL_EXCEPT);
@@ -729,6 +782,7 @@ int main() {
     CheckAsin();
     const auto quotient = div_nid_postfix(7, 2);
     CheckAsinfErrno();
+    CheckIntegerPower();
     Require(quotient.quot == 3 && quotient.rem == 1);
     const auto negativeNumerator = div_nid_postfix(-7, 2);
     Require(negativeNumerator.quot == -3 && negativeNumerator.rem == -1);

@@ -332,7 +332,9 @@ def table(heading, column, data):
         if not total:
             rows.append(f'<tr><td>{escape(group["name"])}</td><td colspan="3">No exports</td></tr>')
             continue
-        percent = f'{100 * group["done"] / total:.0f}%'
+        percent = "100%" if group["done"] == total else "0%"
+        if group["done"] and group["todo"]:
+            percent = f'{min(99.99, 100 * group["done"] / total):.2f}%'
         rows.append(f'<tr><td>{escape(group["name"])}</td><td>{group["done"]}</td><td>{total}</td><td>{percent}</td></tr>')
     rows.append(f'<tr><th>Total</th><th>{data["done"]}</th><th>{data["total"]}</th><th>{data["percent"]}%</th></tr>')
     rows.append("</table>")

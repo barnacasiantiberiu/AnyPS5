@@ -2,6 +2,7 @@
 #include "prx/libkernel/File/include/File.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include "prx/libc/include/HostThreadLocal.hpp"
+#include "prx/libc/include/HostDescriptorFork.hpp"
 
 #include <cerrno>
 #include <string>
@@ -23,6 +24,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <windows.h>
+#include <system_error>
 
 namespace {
 
@@ -30,11 +33,46 @@ constexpr std::uint8_t GuestDirectoryType = 4;
 constexpr std::uint8_t GuestRegularType = 8;
 
 struct DirectoryState {
-    std::mutex mutex;
+    struct Shared {
+        std::size_t cursor = 0;
+        std::uint64_t generation = 0;
+    };
+    HANDLE mapping = nullptr;
+    HANDLE mutex = nullptr;
+    Shared* shared = nullptr;
     std::filesystem::path path;
     std::vector<std::pair<std::string, std::uint8_t>> entries;
-    std::size_t cursor = 0;
+    std::uint64_t generation = 0;
     bool loaded = false;
+
+    DirectoryState() {
+        SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+        mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0, sizeof(Shared), nullptr);
+        if (mapping) shared = static_cast<Shared*>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared)));
+        if (shared) mutex = CreateMutexW(&security, FALSE, nullptr);
+        if (!mutex) {
+            const auto error = GetLastError();
+            if (shared) UnmapViewOfFile(shared);
+            if (mapping) CloseHandle(mapping);
+            throw std::system_error(error, std::system_category(), "Creating shared directory cursor");
+        }
+        std::construct_at(shared);
+    }
+    ~DirectoryState() {
+        CloseHandle(mutex);
+        UnmapViewOfFile(shared);
+        CloseHandle(mapping);
+    }
+    DirectoryState(const DirectoryState&) = delete;
+    DirectoryState& operator=(const DirectoryState&) = delete;
+    void lock() {
+        const auto result = WaitForSingleObject(mutex, INFINITE);
+        if (result != WAIT_OBJECT_0 && result != WAIT_ABANDONED)
+            throw std::system_error(GetLastError(), std::system_category(), "Locking shared directory cursor");
+    }
+    void unlock() noexcept {
+        if (!ReleaseMutex(mutex)) std::terminate();
+    }
 };
 
 std::mutex g_mutex;
@@ -48,6 +86,11 @@ std::shared_ptr<DirectoryState> Find(int fd) {
 }
 
 void Load(DirectoryState& state) {
+    if (state.generation != state.shared->generation) {
+        state.entries.clear();
+        state.loaded = false;
+        state.generation = state.shared->generation;
+    }
     if (state.loaded) return;
     state.loaded = true;
     state.entries.emplace_back(".", GuestDirectoryType);
@@ -64,23 +107,26 @@ void Load(DirectoryState& state) {
 namespace File {
 
 int OpenDirectoryDescriptor(const std::filesystem::path& path) {
+    const HostDescriptorOperation operation;
+    const auto state = std::make_shared<DirectoryState>();
+    state->path = path;
     const int fd = ::_open("NUL", _O_RDONLY | _O_BINARY);
     if (fd < 0) return -1;
     std::lock_guard lock(g_mutex);
-    const auto state = std::make_shared<DirectoryState>();
-    state->path = path;
     g_directories[fd] = state;
     g_directoryCount = g_directories.size();
     return fd;
 }
 
 std::optional<std::filesystem::path> DirectoryDescriptorPath(int fd) {
+    const HostDescriptorOperation operation;
     const auto state = Find(fd);
     if (!state) return std::nullopt;
     return state->path;
 }
 
 void ForgetDirectoryDescriptor(int fd) {
+    const HostDescriptorOperation operation;
     if (g_directoryCount == 0) return;
     std::lock_guard lock(g_mutex);
     g_directories.erase(fd);
@@ -88,15 +134,16 @@ void ForgetDirectoryDescriptor(int fd) {
 }
 
 std::optional<std::int64_t> SeekDirectoryDescriptor(int fd, std::int64_t offset, int whence) {
+    const HostDescriptorOperation operation;
     constexpr int SeekSet = 0;
     constexpr int SeekCurrent = 1;
     if (g_directoryCount == 0) return std::nullopt;
     const auto found = Find(fd);
     if (!found) return std::nullopt;
     auto& state = *found;
-    std::lock_guard lock(state.mutex);
+    std::lock_guard lock(state);
     if (whence != SeekSet && whence != SeekCurrent) NotImplemented_nid_no_patch("lseek from the end of a directory descriptor");
-    const auto cursor = static_cast<std::int64_t>(state.cursor);
+    const auto cursor = static_cast<std::int64_t>(state.shared->cursor);
     if (whence == SeekCurrent && offset == 0) return cursor;
     if (whence == SeekCurrent && offset > std::numeric_limits<std::int64_t>::max() - cursor) {
         errno = EOVERFLOW;
@@ -110,23 +157,25 @@ std::optional<std::int64_t> SeekDirectoryDescriptor(int fd, std::int64_t offset,
     if (target == 0) {
         state.entries.clear();
         state.loaded = false;
-        state.cursor = 0;
+        state.shared->cursor = 0;
+        state.generation = ++state.shared->generation;
         return std::int64_t{0};
     }
     Load(state);
-    state.cursor = static_cast<std::size_t>(target);
+    state.shared->cursor = static_cast<std::size_t>(target);
     return target;
 }
 
 int ReadDirectoryDescriptor(int fd, char* buf, int nbytes) {
+    const HostDescriptorOperation operation;
     const auto found = Find(fd);
     if (!found) return SCE_KERNEL_ERROR_ENOTDIR;
     auto& state = *found;
-    std::lock_guard lock(state.mutex);
+    std::lock_guard lock(state);
     Load(state);
     std::size_t used = 0;
-    while (state.cursor < state.entries.size()) {
-        const auto& [name, type] = state.entries[state.cursor];
+    while (state.shared->cursor < state.entries.size()) {
+        const auto& [name, type] = state.entries[state.shared->cursor];
         if (name.size() > 255) {
             if (used == 0) return SCE_KERNEL_ERROR_ENAMETOOLONG;
             break;
@@ -138,7 +187,7 @@ int ReadDirectoryDescriptor(int fd, char* buf, int nbytes) {
         }
         char* out = buf + used;
         std::memset(out, 0, record);
-        const auto fileNumber = static_cast<std::uint32_t>(state.cursor + 1);
+        const auto fileNumber = static_cast<std::uint32_t>(state.shared->cursor + 1);
         const auto recordLength = static_cast<std::uint16_t>(record);
         std::memcpy(out, &fileNumber, sizeof(fileNumber));
         std::memcpy(out + 4, &recordLength, sizeof(recordLength));
@@ -146,7 +195,7 @@ int ReadDirectoryDescriptor(int fd, char* buf, int nbytes) {
         out[7] = static_cast<char>(name.size());
         std::memcpy(out + 8, name.c_str(), name.size() + 1);
         used += record;
-        ++state.cursor;
+        ++state.shared->cursor;
     }
     return static_cast<int>(used);
 }

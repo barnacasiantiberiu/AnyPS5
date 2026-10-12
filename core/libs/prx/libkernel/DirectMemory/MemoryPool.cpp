@@ -1,8 +1,10 @@
 #include "prx/libkernel/DirectMemory/MemoryPool.hpp"
 #include "prx/libkernel/DirectMemory/DirectMemory.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
 #include <algorithm>
 #include <map>
 #include <mutex>
+#include <stdexcept>
 
 static constexpr size_t NUM_PAGES = DIRECT_MEMORY_SIZE / PS5_PAGE_SIZE;
 
@@ -10,6 +12,20 @@ struct PhysicalMemoryPool {
     static PhysicalMemoryPool& Instance() {
         static PhysicalMemoryPool inst;
         return inst;
+    }
+
+    bool PrepareFork() {
+        _mutex.lock();
+        forkPrepared = true;
+        return true;
+    }
+
+    bool ReleaseFork() noexcept {
+        if (forkPrepared) {
+            forkPrepared = false;
+            _mutex.unlock();
+        }
+        return true;
     }
 
     int Alloc(int64_t searchStart, int64_t searchEnd, size_t len, size_t alignment, int memoryType, int64_t* physOut) {
@@ -149,9 +165,24 @@ private:
     };
 
     std::mutex _mutex;
+    bool forkPrepared = false;
     bool _used[NUM_PAGES] = {};
     std::map<uint64_t, Block> _blocks;
 };
+
+namespace {
+bool PreparePhysicalPool(void*) { return PhysicalMemoryPool::Instance().PrepareFork(); }
+bool ReleasePhysicalPool(void*) noexcept { return PhysicalMemoryPool::Instance().ReleaseFork(); }
+bool ParentPhysicalPool(void* context, bool) noexcept { return ReleasePhysicalPool(context); }
+
+struct PhysicalPoolForkRegistration {
+    PhysicalPoolForkRegistration() {
+        const GuestForkHooks hooks{380, PreparePhysicalPool, ParentPhysicalPool, ReleasePhysicalPool, nullptr};
+        if (GuestRegisterForkHooks_nid_no_patch(&hooks) != 0)
+            throw std::runtime_error("libkernel: registering physical pool fork hooks failed");
+    }
+} physicalPoolForkRegistration;
+}
 
 int DirectMemoryAlloc(int64_t searchStart, int64_t searchEnd, size_t len, size_t alignment, int memoryType, int64_t* physOut) {
     return PhysicalMemoryPool::Instance().Alloc(searchStart, searchEnd, len, alignment, memoryType, physOut);

@@ -1,4 +1,5 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include "prx/libc/include/ForkMutexOwner.hpp"
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -37,6 +38,7 @@ struct AdditiveFeedbackState {
 };
 
 std::mutex g_randomLock;
+ForkMutexOwner randomForkOwner{g_randomLock, 81};
 AdditiveFeedbackState g_random {reinterpret_cast<char*>(g_defaultTable), 3, 31, 3, 3, 0};
 
 std::uint32_t LoadWord(const char* table, int index) {

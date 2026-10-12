@@ -1,4 +1,5 @@
 #include "prx/libc/include/ApplicationHeap.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
 #include "prx/libc/include/GuestHeap.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <array>
@@ -11,6 +12,7 @@
 #include <new>
 #include <stdexcept>
 #include <algorithm>
+#include <cerrno>
 
 namespace {
 
@@ -26,12 +28,47 @@ using Stats = int (APS5_VABI *)(void*);
 using UsableSize = std::size_t (APS5_VABI *)(void*);
 
 std::mutex heapMutex;
+std::mutex initializationMutex;
+bool forkPrepared = false;
 std::array<void*, 10> heapApi{};
 std::once_flag heapInitialization;
 std::exception_ptr heapFailure;
 Initialize heapFinalize = nullptr;
 bool heapFinalized = false;
 thread_local bool heapCallbackActive = false;
+thread_local bool heapInitializing = false;
+
+bool PrepareHeap(void*) {
+    if (heapCallbackActive || heapInitializing) {
+        errno = 35;
+        return false;
+    }
+    if (std::try_lock(initializationMutex, heapMutex) != -1) {
+        errno = 35;
+        return false;
+    }
+    forkPrepared = true;
+    return true;
+}
+
+bool ReleaseHeap(void*) noexcept {
+    if (forkPrepared) {
+        forkPrepared = false;
+        heapMutex.unlock();
+        initializationMutex.unlock();
+    }
+    return true;
+}
+
+bool ParentHeap(void* context, bool) noexcept { return ReleaseHeap(context); }
+
+struct HeapForkRegistration {
+    HeapForkRegistration() {
+        const GuestForkHooks hooks{350, PrepareHeap, ParentHeap, ReleaseHeap, nullptr};
+        if (GuestRegisterForkHooks_nid_no_patch(&hooks) != 0)
+            throw std::runtime_error("libc: registering application heap fork hooks failed");
+    }
+} heapForkRegistration;
 
 void* APS5_VABI defaultAllocate(std::size_t bytes) { return GuestHeap::GuestHeapAllocate_nid_postfix(bytes); }
 void APS5_VABI defaultFree(void* pointer) { GuestHeap::GuestHeapFree_nid_postfix(pointer); }
@@ -137,6 +174,11 @@ void ApplicationHeapRegister_nid_no_patch(void* const* api) {
 }
 
 void ApplicationHeapInitialize_nid_no_patch(const void* processParameters) {
+    std::lock_guard initializationLock(initializationMutex);
+    struct Initializing {
+        Initializing() { heapInitializing = true; }
+        ~Initializing() { heapInitializing = false; }
+    } initializing;
     std::call_once(heapInitialization, [processParameters] {
         try {
             if (read<std::uint64_t>(processParameters, 0) < 0x40 || read<std::uint32_t>(processParameters, 8) != 0x4942524f) throw std::runtime_error("application heap: invalid process parameters");

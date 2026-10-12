@@ -2,9 +2,11 @@
 
 #ifdef _WIN32
 #include "prx/libc/include/GuestArena.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
 #include <iterator>
 #include <map>
 #include <mutex>
+#include <stdexcept>
 #include <windows.h>
 #endif
 
@@ -22,6 +24,31 @@ constexpr std::size_t DeallocationStackOffset = 0x1478;
 
 std::mutex rangesLock;
 std::map<std::uintptr_t, std::uintptr_t> ranges;
+bool forkPrepared = false;
+
+bool PrepareStacks(void*) {
+    rangesLock.lock();
+    forkPrepared = true;
+    return true;
+}
+
+bool ReleaseStacks(void*) noexcept {
+    if (forkPrepared) {
+        forkPrepared = false;
+        rangesLock.unlock();
+    }
+    return true;
+}
+
+bool ParentStacks(void* context, bool) noexcept { return ReleaseStacks(context); }
+
+struct StackForkRegistration {
+    StackForkRegistration() {
+        const GuestForkHooks hooks{425, PrepareStacks, ParentStacks, ReleaseStacks, nullptr};
+        if (GuestRegisterForkHooks_nid_no_patch(&hooks) != 0)
+            throw std::runtime_error("libc: registering guest stack fork hooks failed");
+    }
+} stackForkRegistration;
 
 StackBounds CurrentBounds() {
     auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());

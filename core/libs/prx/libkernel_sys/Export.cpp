@@ -17,6 +17,7 @@
 #endif
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
 #include "prx/libc/include/FilesystemError.hpp"
 #include "prx/libkernel/File/include/DirectoryDescriptor.hpp"
 #include "prx/libc/include/CreationMask.hpp"
@@ -115,12 +116,11 @@ bool ReadRelativeSymbolicLink(const std::filesystem::path& native, std::string& 
 extern "C" {
 
 int APS5_VABI fork_nid_postfix(void) {
-    NotImplemented_nid_no_patch("fork: child processes");
-    return -1;
+    return GuestFork_nid_no_patch();
 }
 
 int APS5_VABI setsid_nid_postfix(void) {
-    return static_cast<int>(Fail(GuestEperm));
+    return GuestSetSid_nid_no_patch();
 }
 
 std::uint16_t APS5_VABI umask_nid_postfix(std::uint16_t mask) {

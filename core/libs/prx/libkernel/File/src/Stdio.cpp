@@ -1,4 +1,5 @@
 #include <algorithm>
+#include "prx/libc/include/HostDescriptorFork.hpp"
 #include <cstdint>
 #include <cstddef>
 #include <limits>
@@ -410,6 +411,7 @@ static int NativeFstatfs(int descriptor, KernelStatfs* fs) {
 #endif
 
 extern "C" int APS5_VABI pipe_nid_postfix(int* descriptors) {
+    HostDescriptorOperation operation;
     if (!descriptors) return PosixFailure(GUEST_EFAULT);
     const GuestArena::HostWrite destination(descriptors, 2 * sizeof(int));
     if (!destination.Open()) return PosixFailure(GUEST_EFAULT);
@@ -491,6 +493,7 @@ int APS5_VABI chmod_nid_postfix(const char* path, int mode) {
 }
 
 int APS5_VABI close_nid_postfix(int d) {
+    HostDescriptorOperation operation;
     if (d >= GuestSockets::FirstDescriptor) return GuestSockets::Close(d);
     int socketError = 0;
     if (KernelCloseSocket_nid_no_patch(d, &socketError)) {
@@ -514,6 +517,7 @@ int APS5_VABI _close_nid_postfix(int descriptor) {
 }
 
 int APS5_VABI dup_nid_postfix(int d) {
+    HostDescriptorOperation operation;
     if (d >= GuestSockets::FirstDescriptor) return GuestSockets::Duplicate(d);
     if (d < 0) return PosixFailure(GUEST_EBADF);
 #ifdef _WIN32
@@ -531,6 +535,7 @@ int APS5_VABI dup_nid_postfix(int d) {
 }
 
 int APS5_VABI dup2_nid_postfix(int from, int to) {
+    HostDescriptorOperation operation;
     if (from < 0 || to < 0) return PosixFailure(GUEST_EBADF);
     const bool socketFrom = from >= GuestSockets::FirstDescriptor;
     const bool socketTo = to >= GuestSockets::FirstDescriptor;

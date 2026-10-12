@@ -10,11 +10,11 @@ Includes a [relinker](core/relinker) that converts executable to the target syst
 
 <!-- anyps5-status:start -->
 
-<!-- Source snapshot: libraries 3081/3537 (87.11%); shaders 1166/1166 (100.00%). -->
+<!-- Source snapshot: libraries 3088/3537 (87.31%); shaders 1166/1166 (100.00%). -->
 
-[![libraries](https://barnacasiantiberiu.github.io/AnyPS5/badge-libraries.svg?v=63708279102fa273)](https://barnacasiantiberiu.github.io/AnyPS5/) [![shaders](https://barnacasiantiberiu.github.io/AnyPS5/badge-shaders.svg?v=63708279102fa273)](https://barnacasiantiberiu.github.io/AnyPS5/)
+[![libraries](https://barnacasiantiberiu.github.io/AnyPS5/badge-libraries.svg?v=49274074e9bdcc1a)](https://barnacasiantiberiu.github.io/AnyPS5/) [![shaders](https://barnacasiantiberiu.github.io/AnyPS5/badge-shaders.svg?v=49274074e9bdcc1a)](https://barnacasiantiberiu.github.io/AnyPS5/)
 
-[![progress map](https://barnacasiantiberiu.github.io/AnyPS5/progress.svg?v=63708279102fa273)](https://barnacasiantiberiu.github.io/AnyPS5/)
+[![progress map](https://barnacasiantiberiu.github.io/AnyPS5/progress.svg?v=49274074e9bdcc1a)](https://barnacasiantiberiu.github.io/AnyPS5/)
 
 <sub>* System libraries: percentage of the functions known to the project so far (declared in [core/libs/prx](core/libs/prx)), not of every PS5 system function. The total grows as more functions are declared.</sub>
 

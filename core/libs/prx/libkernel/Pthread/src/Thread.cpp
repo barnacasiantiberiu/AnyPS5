@@ -3,6 +3,7 @@
 #include "../include/WindowsThreadLocal.hpp"
 #include "../include/Cancel.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include "prx/libc/include/CpuTopology.hpp"
 #include <algorithm>
@@ -186,6 +187,89 @@ struct CpuClockRegistry {
 static CpuClockRegistry& CpuClocks() {
     static auto* registry = new CpuClockRegistry();
     return *registry;
+}
+
+namespace {
+
+bool threadsPrepared = false;
+PthreadPrivate* forkThread = nullptr;
+
+bool PrepareGuestThreads(void*) {
+    auto* current = CurrentGuestState().current;
+    auto& registry = CpuClocks();
+    if (current)
+        std::lock(stackLock, registry.lock, current->nameLock, current->cancelLock, current->_join_mtx);
+    else
+        std::lock(stackLock, registry.lock);
+    forkThread = current;
+    threadsPrepared = true;
+    return true;
+}
+
+bool ParentGuestThreads(void*, bool) noexcept {
+    if (!threadsPrepared) return true;
+    threadsPrepared = false;
+    if (forkThread) {
+        forkThread->_join_mtx.unlock();
+        forkThread->cancelLock.unlock();
+        forkThread->nameLock.unlock();
+        forkThread = nullptr;
+    }
+    CpuClocks().lock.unlock();
+    stackLock.unlock();
+    return true;
+}
+
+bool ChildGuestThreads(void*) noexcept {
+    bool repaired = true;
+    auto& state = CurrentGuestState();
+    auto* current = state.current;
+    auto& registry = CpuClocks();
+    for (auto it = registry.threads.begin(); it != registry.threads.end();) {
+        if (it->second == current) ++it;
+        else it = registry.threads.erase(it);
+    }
+    for (auto it = liveStacks.begin(); it != liveStacks.end();) {
+        if (it->first == current) ++it;
+        else it = liveStacks.erase(it);
+    }
+    if (current) {
+#ifdef _WIN32
+        HANDLE handle = nullptr;
+        repaired = DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
+                                   &handle, 0, FALSE, DUPLICATE_SAME_ACCESS) != 0;
+        current->nativeHandle = handle;
+        current->wakeEvent = nullptr;
+#else
+        current->hostThread = pthread_self();
+        current->hostCpuClockBound = pthread_getcpuclockid(pthread_self(), &current->hostCpuClock) == 0;
+#endif
+        current->threadId = std::this_thread::get_id();
+        current->_adopted = true;
+        current->_detached = true;
+        current->references.store(1);
+        current->waitCount.store(0);
+        current->cancelPending.store(false);
+        current->pendingException.store(0);
+        current->cancelWait = nullptr;
+        // Waiters belonging to vanished threads must not remain in the child's queue.
+        std::construct_at(&current->_join_cv);
+        TimedWait::BindThreadWaitState(&current->waitCount);
+    }
+    state.finishing = false;
+    state.exiting = false;
+    ParentGuestThreads(nullptr, true);
+    return repaired;
+}
+
+struct ThreadForkRegistration {
+    ThreadForkRegistration() {
+        const GuestForkHooks hooks{500, PrepareGuestThreads, ParentGuestThreads, ChildGuestThreads, nullptr};
+        if (GuestRegisterForkHooks_nid_no_patch(&hooks) != 0)
+            throw std::runtime_error("libkernel: registering thread fork hooks failed");
+    }
+} threadForkRegistration;
+
 }
 
 PthreadPrivate::PthreadPrivate(const PthreadAttrPrivate* attr) : _finished(false), _retval(nullptr), _detached(false), _adopted(false) {

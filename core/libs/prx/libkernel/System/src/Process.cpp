@@ -12,6 +12,8 @@
 
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
+#include "prx/libc/include/DaemonRuntime.hpp"
 #include "prx/libc/include/ApplicationHeap.hpp"
 #include "prx/libc/include/HostEntropy.hpp"
 #include "prx/libc/include/Shutdown.hpp"
@@ -40,8 +42,21 @@
 #endif
 
 extern "C" int* APS5_VABI __error_nid_postfix();
+extern "C" int APS5_VABI sigaction_nid_postfix(int, const GuestSigaction*, GuestSigaction*);
+extern "C" int APS5_VABI sceKernelOpen(const char*, int, std::uint16_t);
+extern "C" int APS5_VABI dup2_nid_postfix(int, int);
+extern "C" int APS5_VABI close_nid_postfix(int);
 
 namespace {
+
+int OpenDaemonNull() {
+    return sceKernelOpen("/dev/null", 2, 0);
+}
+
+const DaemonRuntime daemonRuntime{sigaction_nid_postfix, OpenDaemonNull, dup2_nid_postfix, close_nid_postfix};
+struct DaemonRegistration {
+    DaemonRegistration() { LibcRegisterDaemonRuntime_nid_no_patch(&daemonRuntime); }
+} daemonRegistration;
 
 constexpr int sceInvalidArgument = static_cast<int>(0x80020016u);
 constexpr int errnoNoChild = 10;
@@ -214,35 +229,11 @@ int APS5_VABI getpid_nid_postfix(void) {
 }
 
 int APS5_VABI getsid_nid_postfix(int pid) {
-    (void)pid;
-    NotImplemented_nid_no_patch("getsid: process sessions");
-    return -1;
+    return GuestGetSid_nid_no_patch(pid);
 }
 
 int APS5_VABI getppid_nid_postfix(void) {
-#ifdef _WIN32
-    const DWORD self = GetCurrentProcessId();
-    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE)
-        throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), "getppid: CreateToolhelp32Snapshot");
-    PROCESSENTRY32W entry{};
-    entry.dwSize = sizeof(entry);
-    bool found = false;
-    DWORD pid = 0;
-    for (BOOL more = Process32FirstW(snapshot, &entry); more && !found; more = Process32NextW(snapshot, &entry)) {
-        if (entry.th32ProcessID == self) {
-            pid = entry.th32ParentProcessID;
-            found = true;
-        }
-    }
-    CloseHandle(snapshot);
-    if (!found) throw std::runtime_error("getppid: the process is missing from the process snapshot");
-#else
-    const auto pid = ::getppid();
-#endif
-    if (static_cast<std::uint64_t>(pid) > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
-        throw std::runtime_error("Parent process identifier is outside the guest range");
-    return static_cast<int>(pid);
+    return GuestGetParentPid_nid_no_patch();
 }
 
 int APS5_VABI sceKernelGetAppInfo(int pid, void* info) {
@@ -294,10 +285,7 @@ int APS5_VABI system_nid_postfix(const char* command) {
 }
 
 int APS5_VABI waitpid_nid_postfix(int pid, int* status, int options) {
-    (void)pid;
-    (void)status;
-    *__error_nid_postfix() = (static_cast<unsigned>(options) & ~freebsdWaitOptions) != 0 ? errnoInvalidArgument : errnoNoChild;
-    return -1;
+    return GuestWaitPid_nid_no_patch(pid, status, options);
 }
 
 int APS5_VABI wait_nid_postfix(int* status) {

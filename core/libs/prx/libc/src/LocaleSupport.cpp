@@ -1,4 +1,5 @@
 #include <climits>
+#include "prx/libc/include/ForkMutexOwner.hpp"
 #include <clocale>
 #include <cstddef>
 #include <cstdio>
@@ -31,6 +32,7 @@ void APS5_VABI _ZdlPv_nid_postfix(void* pointer);
 namespace {
 
 std::mutex g_localeInitMutex;
+ForkMutexOwner localeForkOwner{g_localeInitMutex, 83};
 bool g_localeInitialized = false;
 std::vector<GuestLocale::Facet*> g_registeredFacets;
 

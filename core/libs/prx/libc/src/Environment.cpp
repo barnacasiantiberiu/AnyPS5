@@ -8,6 +8,7 @@
 #include <string_view>
 #include <vector>
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include "prx/libc/include/ForkMutexOwner.hpp"
 
 #ifndef _WIN32
 extern char** environ;
@@ -25,6 +26,7 @@ struct EnvironmentEntry {
     }
 };
 std::mutex environmentMutex;
+ForkMutexOwner environmentForkOwner{environmentMutex, 82};
 std::vector<EnvironmentEntry>& Environment() {
     // Seed once from the host. Guest mutations remain local to the guest runtime.
     static std::vector<EnvironmentEntry> entries = [] {

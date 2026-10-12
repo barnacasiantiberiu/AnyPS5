@@ -17,9 +17,17 @@
 
 ## Build and test
 
+### Fork development: reproducible implementations
+
+- Every implementation must include the source, configuration, setup helpers, functional tests, packaging rules and build instructions needed to reproduce it on a PC. Include required support files in the implementation commit. A clean checkout must work through documented prerequisites and tracked setup commands, without undocumented downloads, ignored local scripts or user-specific paths.
+- Pin third-party source with submodule gitlinks. For new or changed binary dependencies, record the version, source URL and SHA-256, and verify the checksum before installation or extraction. Keep portable download/setup procedures and dependency provenance in the repository; document supported host versions and external prerequisites.
+- Keep compiler archives, extracted toolchains, research PDBs, caches, logs and generated build outputs outside Git. If an external artifact is required to build, test or run the implementation, provide a tracked way to obtain or recreate it. Packaging must include the required redistributable runtime libraries, discovered from the configured dependencies.
+- Test changed setup and packaging procedures on the PC as well as the implementation. Check that generated packages contain the required libraries and runtime files. Record commands, results, skips and host limitations in the English PR; distinguish a reused local build from a verified clean-checkout run.
+
 ### Fork development: functional tests for every module
 
-- Keep each system library's changes, functional tests, technical-debt updates and generated README status in its own commit. Shared test infrastructure has a separate commit. Do not rewrite already published commits just to combine later tests with an earlier implementation.
+- Finish the requested system library before committing: all its exports must be implemented and its PC functional tests must pass. Check the exact implemented/total counts, not a rounded percentage. Keep partial module work uncommitted, and report unresolved dependencies or unknown behavior without counting stubs as complete.
+- Keep the completed library's changes, required support files, functional tests, technical-debt updates and generated README status in one commit and one pull request. Do not create per-function or partial-module commits. Write commit messages and concise pull request descriptions in English, stating what was added, changed or fixed and how it was tested. Independent shared infrastructure may have a separate commit and PR; declare it as a prerequisite when needed. Do not rewrite already published commits just to combine later tests with an earlier implementation.
 - Run `python tools/update_readme_status.py --install-hook` once per checkout. The pre-commit hook updates the README's hidden source snapshot and image cache keys using only staged source files, so partial source changes are counted correctly. It refuses to overwrite unstaged README edits. Other checkouts must install the hook too; commits made with hooks bypassed or through GitHub must run `python tools/update_readme_status.py` and include the resulting README. Use `--check` to verify synchronization. The hook updates counts only; functional tests remain required separately.
 - The README uses the original project's badges and progress map, linked to [this fork's progress page](https://barnacasiantiberiu.github.io/AnyPS5/). The Progress workflow regenerates that page, including its original System libraries table (`Library`, `Implemented`, `Total`, `%`), on every push to `main`. Images display the latest deployed `main`, including when viewing an older README; the hidden snapshot records the source counts of that individual commit. This fork enables the Progress workflow; the inherited build workflows described below remain disabled, and functional tests run locally.
 - Every newly implemented or changed module must have PC-runnable functional tests registered with CTest labels `module-functional` and `module:<library-name>`, and a nonzero timeout of at most 30 seconds. Add affected dependent modules to validation when shared code changes.
@@ -38,7 +46,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-Python 3 is optional; without it some relinker tests are not registered.
+Python is optional for building without validation; without it some relinker tests are not registered. This fork's implementation validation and Windows setup helpers require Python 3.10 or newer.
 
 Every push to `main`, including a merged pull request, automatically runs full Linux and Windows builds and tests and the relinker matrix on Linux, Windows and macOS, using the pushed commit without contributor checks.
 
@@ -69,7 +77,7 @@ The [pull request template](.github/pull_request_template.md) is the checklist f
 - Fixes a title needs go to `main` as pull requests. A Game bring-up discussion lists the open pull requests and local changes the title still needs; update the list when one is merged, closed or replaced.
 - The PR overlap comment lists open pull requests that change the same lines or exports; agree with their authors which one goes first and declare it with `Depends on`.
 - Run the tests before opening the pull request and describe what was tested (OS, title or homebrew).
-- Investigation notes, reports, screenshots and logs go in the pull request, not in the repository. Images for documentation go in the [gist](https://gist.github.com/boykopovar/0e53f2e1426f29ecd41e3b51540b8a90) comments.
+- Investigation notes, reports, screenshots and logs go in the pull request, not in the repository. Maintained setup, test and packaging scripts and required build instructions belong in the repository with the implementation. Images for documentation go in the [gist](https://gist.github.com/boykopovar/0e53f2e1426f29ecd41e3b51540b8a90) comments.
 - Say whether the change was written with AI assistance. The author of the pull request is responsible for every line of it.
 
 ## Documentation

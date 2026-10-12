@@ -36,6 +36,10 @@ target_sources(libc PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/RuntimeSupport.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/LocaleSupport.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Process.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/GuestProcess.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/HostProcess.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/WindowsProcessRuntime.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/HostDescriptorFork.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Hostname.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Environment.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Directory.cpp
@@ -58,6 +62,26 @@ if(WIN32)
 endif()
 
 if(BUILD_TESTING)
+    add_test_executable(guest_heap_diagnostics_tests ${LIBS_INCLUDE_DIR}/tests/GuestHeapDiagnostics.cpp)
+    target_include_directories(guest_heap_diagnostics_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_heap_diagnostics_tests PRIVATE libc)
+    configure_windows_unwind(guest_heap_diagnostics_tests)
+    add_test(NAME guest_heap_diagnostics COMMAND guest_heap_diagnostics_tests)
+    set_tests_properties(guest_heap_diagnostics PROPERTIES LABELS "module-functional;module:libc" TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(guest_heap_diagnostics PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+    add_test_executable(guest_atomic_assert_tests ${LIBS_INCLUDE_DIR}/tests/GuestAtomicAssert.cpp)
+    target_include_directories(guest_atomic_assert_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_atomic_assert_tests PRIVATE libc)
+    configure_windows_unwind(guest_atomic_assert_tests)
+    add_test(NAME guest_atomic_assert COMMAND guest_atomic_assert_tests)
+    set_tests_properties(guest_atomic_assert PROPERTIES LABELS "module-functional;module:libc" TIMEOUT 25)
+    if(WIN32)
+        set_tests_properties(guest_atomic_assert PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
     add_test_executable(guest_array_callbacks_tests ${LIBS_INCLUDE_DIR}/tests/GuestArrayCallbacks.cpp)
     target_include_directories(guest_array_callbacks_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_link_libraries(guest_array_callbacks_tests PRIVATE libc)
@@ -168,6 +192,7 @@ if(BUILD_TESTING)
     target_link_libraries(guest_math_tests PRIVATE libc)
     configure_windows_unwind(guest_math_tests)
     add_test(NAME guest_math COMMAND guest_math_tests)
+    set_tests_properties(guest_math PROPERTIES LABELS "module-functional;module:libc" TIMEOUT 20)
     if(WIN32)
         set_tests_properties(guest_math PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
@@ -296,14 +321,22 @@ if(BUILD_TESTING)
         set_tests_properties(guest_memrchr PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
-    add_test_executable(guest_daemon_tests ${LIBS_INCLUDE_DIR}/tests/GuestDaemon.cpp)
-    target_include_directories(guest_daemon_tests PRIVATE ${LIBS_INCLUDE_DIR})
-    target_link_libraries(guest_daemon_tests PRIVATE libc)
-    configure_windows_unwind(guest_daemon_tests)
-    add_test(NAME guest_daemon COMMAND guest_daemon_tests)
     if(WIN32)
-        set_tests_properties(guest_daemon PROPERTIES ENVIRONMENT_MODIFICATION
-            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+        add_test_executable(guest_daemon_functional_tests ${LIBS_INCLUDE_DIR}/tests/GuestDaemonFunctional.cpp)
+        target_include_directories(guest_daemon_functional_tests PRIVATE ${LIBS_INCLUDE_DIR})
+        target_link_libraries(guest_daemon_functional_tests PRIVATE libkernel_sys libkernel libc)
+        configure_windows_unwind(guest_daemon_functional_tests)
+        add_test(NAME guest_daemon_failures COMMAND guest_daemon_functional_tests failures)
+        set_tests_properties(guest_daemon_failures PROPERTIES LABELS "module-functional;module:libc" TIMEOUT 15
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+        foreach(noChdir RANGE 0 1)
+            foreach(noClose RANGE 0 1)
+                set(daemonTest guest_daemon_functional_${noChdir}${noClose})
+                add_test(NAME ${daemonTest} COMMAND guest_daemon_functional_tests ${noChdir} ${noClose})
+                set_tests_properties(${daemonTest} PROPERTIES LABELS "module-functional;module:libc" TIMEOUT 15
+                    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+            endforeach()
+        endforeach()
     endif()
     add_test_executable(guest_lifecycle_tests ${LIBS_INCLUDE_DIR}/tests/GuestLifecycle.cpp)
     target_include_directories(guest_lifecycle_tests PRIVATE ${LIBS_INCLUDE_DIR})

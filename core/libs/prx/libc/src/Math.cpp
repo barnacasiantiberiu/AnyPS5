@@ -11,6 +11,7 @@
 #include <stdexcept>
 
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/ForkMutexOwner.hpp"
 #include "prx/libc/include/SonyCrt.hpp"
 
 namespace {
@@ -291,6 +292,18 @@ float APS5_VABI atanf_nid_postfix(float x) { return std::atan(x); }
 double APS5_VABI atan2_nid_postfix(double y, double x) { return std::atan2(y, x); }
 float APS5_VABI powf_nid_postfix(float base, float exp) { return std::pow(base, exp); }
 double APS5_VABI pow_nid_postfix(double base, double exp) { return std::pow(base, exp); }
+double APS5_VABI __powidf2_nid_postfix(double base, int exponent) {
+    const bool reciprocal = exponent < 0;
+    unsigned int magnitude = reciprocal ? 0u - static_cast<unsigned int>(exponent) : static_cast<unsigned int>(exponent);
+    double result = 1.0;
+    while (magnitude != 0u) {
+        if ((magnitude & 1u) != 0u) result *= base;
+        magnitude >>= 1u;
+        if (magnitude == 0u) break;
+        base *= base;
+    }
+    return reciprocal ? 1.0 / result : result;
+}
 float APS5_VABI __powisf2_nid_postfix(float base, int exponent) {
     const bool reciprocal = exponent < 0;
     float result = 1.0f;
@@ -390,6 +403,7 @@ int APS5_VABI __signbitl_nid_postfix(long double x) {
 }
 
 static std::mutex g_randLock;
+static ForkMutexOwner randForkOwner{g_randLock, 80};
 static std::uint32_t g_randState = 1;
 
 static int NextRand_nid_no_patch(std::uint32_t& state) {

@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <condition_variable>
 #include <exception>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -12,6 +13,8 @@
 #include <windows.h>
 #endif
 #include <atomic>
+#include "prx/libc/include/DaemonRuntime.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
 #include <stdexcept>
 #include "prx/libc/include/Shutdown.hpp"
 
@@ -19,6 +22,7 @@
 #include "SceTypes.hpp"
 
 extern "C" int APS5_VABI __cxa_atexit_nid_postfix(void (APS5_VABI *func)(void*), void* arg, void* dsoHandle);
+extern "C" int APS5_VABI chdir_nid_postfix(const char* path);
 
 namespace {
 
@@ -32,10 +36,53 @@ std::exception_ptr shutdownFailure;
 std::stop_source shutdownSource;
 std::atomic<bool> exitRequested{false};
 std::atomic<bool> exitStarted{false};
+std::atomic<const DaemonRuntime*> daemonRuntime{nullptr};
 using GuestExitCallback = void (APS5_VABI*)();
+std::mutex quickExitMutex;
+std::vector<GuestExitCallback> quickExitCallbacks;
+bool processPrepared = false;
+
+bool PrepareProcessState(void*) {
+    std::lock(shutdownMutex, quickExitMutex);
+    processPrepared = true;
+    if (shutdownStarted || exitRequested.load() || exitStarted.load() || shutdownSource.stop_requested()) {
+        errno = 35;
+        return false;
+    }
+    return true;
+}
+
+bool ReleaseProcessState(void*) noexcept {
+    if (!processPrepared) return true;
+    processPrepared = false;
+    quickExitMutex.unlock();
+    shutdownMutex.unlock();
+    return true;
+}
+
+bool ParentProcessState(void* context, bool) noexcept { return ReleaseProcessState(context); }
+
+bool ChildProcessState(void*) noexcept {
+    std::construct_at(&shutdownChanged);
+    return ReleaseProcessState(nullptr);
+}
+
+struct ProcessForkRegistration {
+    ProcessForkRegistration() {
+        const GuestForkHooks hooks{250, PrepareProcessState, ParentProcessState, ChildProcessState, nullptr};
+        if (GuestRegisterForkHooks_nid_no_patch(&hooks) != 0)
+            throw std::runtime_error("libc: registering process fork hooks failed");
+    }
+} processForkRegistration;
 
 void APS5_VABI RunGuestExitCallback(void* callback) {
     reinterpret_cast<GuestExitCallback>(callback)();
+}
+
+extern "C" void LibcRegisterDaemonRuntime_nid_no_patch(const DaemonRuntime* runtime) {
+    if (!runtime || !runtime->signalAction || !runtime->openNull || !runtime->duplicate || !runtime->close)
+        throw std::invalid_argument("libc: incomplete daemon runtime");
+    daemonRuntime.store(runtime);
 }
 
 }
@@ -163,11 +210,6 @@ int APS5_VABI atexit_nid_postfix(GuestExitCallback func) {
     return __cxa_atexit_nid_postfix(RunGuestExitCallback, reinterpret_cast<void*>(func), nullptr);
 }
 
-namespace {
-std::mutex quickExitMutex;
-std::vector<GuestExitCallback> quickExitCallbacks;
-}
-
 int APS5_VABI at_quick_exit_nid_postfix(GuestExitCallback func) {
     if (func == nullptr)
         return 0;
@@ -187,10 +229,30 @@ int APS5_VABI at_quick_exit_nid_postfix(GuestExitCallback func) {
 }
 
 int APS5_VABI daemon_nid_postfix(int noChdir, int noClose) {
-    (void)noChdir;
-    (void)noClose;
-    NotImplemented_nid_no_patch("daemon: forking into the background");
-    return -1;
+    const auto* runtime = daemonRuntime.load();
+    if (!runtime) throw std::runtime_error("daemon: libkernel runtime is not loaded");
+    GuestSigaction previous{};
+    const GuestSigaction ignored{1, 0, {}};
+    const bool signalChanged = runtime->signalAction(1, &ignored, &previous) == 0;
+    const int child = GuestFork_nid_no_patch();
+    if (child < 0) return -1;
+    if (child > 0) LibcTerminate_nid_no_patch(0);
+    const int session = GuestSetSid_nid_no_patch();
+    const int savedError = errno;
+    if (signalChanged) runtime->signalAction(1, &previous, nullptr);
+    if (session < 0) {
+        errno = savedError;
+        return -1;
+    }
+    if (!noChdir) chdir_nid_postfix("/");
+    if (!noClose) {
+        const int descriptor = runtime->openNull();
+        if (descriptor >= 0) {
+            for (int target = 0; target != 3; ++target) runtime->duplicate(descriptor, target);
+            if (descriptor > 2) runtime->close(descriptor);
+        }
+    }
+    return 0;
 }
 
 }

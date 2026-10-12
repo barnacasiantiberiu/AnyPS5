@@ -35,6 +35,29 @@ git submodule update --init --recursive
 
 ## Commands
 
+### Windows setup and PC validation
+
+From a checkout with Git for Windows and Python 3.10 or newer installed, run:
+
+```powershell
+git submodule update --init --recursive
+./tools/windows/Bootstrap.ps1
+. ./tools/windows/Enter-Environment.ps1
+./tools/windows/Test-Modules.ps1
+```
+
+The [bootstrap](../../tools/windows/Bootstrap.ps1) downloads the pinned WinLibs archive, checks its SHA-256 before extraction and installs it under `build_tools/winlibs/mingw64`. GCC, CMake, Ninja and the three MinGW runtime DLLs come from this package. An existing complete installation can be reused. `-Archive C:/path/to/winlibs.zip -Offline` uses a previously downloaded archive without network access. The exact download URL and checksum are stored in [Toolchain.psd1](../../tools/windows/Toolchain.psd1).
+
+[Enter-Environment.ps1](../../tools/windows/Enter-Environment.ps1) adds the toolchain to the current PowerShell session, selects an installed Python interpreter, discovers the Git CA bundle if `SSL_CERT_FILE` is unset, and uses `build_tools/tmp` for temporary files. Pass `-ToolchainRoot C:/path/to/mingw64` or `-Python C:/path/to/python.exe` to use explicit locations. No administrator installation or machine-wide environment change is required.
+
+[Test-Modules.ps1](../../tools/windows/Test-Modules.ps1) configures the full Release build with Python tests, SPIR-V Tools and the offscreen video test driver. It builds the executable and patched libraries, runs every registered functional module suite through `tools/test_modules.py`, then runs the complete libc suite. Reports remain under the build directory. Each test retains its registered timeout, at most 30 seconds for module suites. This is the PC module validation run; it does not establish compatibility with every game or execute every GPU test in the repository.
+
+Third-party source revisions are tracked as Git submodules. The pinned `ffmpeg-core` submodule downloads its matching prebuilt FFmpeg archive during CMake configuration; use `FFMPEG_PREBUILT_DIR` for an unpacked offline copy. The Windows archive URL and checksum are also recorded in `Toolchain.psd1`. Compiler archives, extracted tools, build outputs and Microsoft PDBs remain outside Git. Windows process support uses the symbol identities and offsets compiled into [WindowsProcessLayout.hpp](../../core/libs/prx/libc/include/WindowsProcessLayout.hpp), with its supported host profile recorded in [technical debt](TechnicalDebt.md); it does not download or read PDBs at build or run time.
+
+After entering the environment and building, `& $AnyPS5Python tools/package_release.py --platform windows --build build --version v0.0.0-local --output build/release` collects patched libraries and the required MinGW runtime DLLs from the compiler recorded in `CMakeCache.txt`. Pass `--runtime-dir C:/path/to/mingw64/bin` to select a runtime directory explicitly. These DLLs are included in the generated release archives.
+
+### Manual build
+
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
 cmake --build build --parallel

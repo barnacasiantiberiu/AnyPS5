@@ -1,4 +1,5 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include "prx/libc/include/ForkMutexOwner.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -35,6 +36,7 @@ struct Arena {
 };
 
 std::mutex arenaMutex;
+ForkMutexOwner mspaceForkOwner{arenaMutex, 390};
 std::map<std::uintptr_t, std::unique_ptr<Arena>> arenas;
 
 void Error(int value) { *__error_nid_postfix() = value; }

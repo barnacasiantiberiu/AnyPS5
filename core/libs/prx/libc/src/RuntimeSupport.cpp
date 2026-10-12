@@ -16,6 +16,8 @@
 #endif
 
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/ForkMutexOwner.hpp"
+#include "prx/libc/include/ForkRecursiveMutex.hpp"
 #include "prx/libc/include/SonyCrt.hpp"
 #include "prx/libc/include/specifics/gcc/AtomicOps.hpp"
 #include "prx/libc/include/FileStream.hpp"
@@ -23,7 +25,8 @@
 
 namespace {
 
-std::recursive_mutex g_sysLock;
+ForkRecursiveMutex g_sysLock;
+ForkMutexOwner sysForkOwner{g_sysLock, 20};
 
 struct ExitDestructor {
     void (APS5_VABI *func)(void*);
@@ -32,6 +35,8 @@ struct ExitDestructor {
 };
 
 std::mutex g_exitMutex;
+ForkMutexOwner exitForkOwner{g_exitMutex, 70};
+ForkMutexOwner constraintForkOwner{SonyConstraintMutex(), 84};
 std::vector<ExitDestructor> g_exitDestructors;
 bool g_exitRunnerRegistered = false;
 

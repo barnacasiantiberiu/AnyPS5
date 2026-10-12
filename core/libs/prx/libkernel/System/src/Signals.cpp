@@ -1,5 +1,7 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/DaemonRuntime.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
 #include "prx/libkernel/Pthread/Posix/Common.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <atomic>
@@ -11,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -19,17 +22,6 @@
 extern "C" int* APS5_VABI __error_nid_postfix();
 extern "C" int APS5_VABI getpid_nid_postfix(void);
 extern "C" Pthread APS5_VABI scePthreadSelf(void);
-
-struct GuestSignalSet {
-    std::uint32_t bits[4];
-};
-
-struct GuestSigaction {
-    std::uintptr_t handler;
-    int flags;
-    GuestSignalSet mask;
-};
-static_assert(sizeof(GuestSigaction) == 32 && offsetof(GuestSigaction, flags) == 8 && offsetof(GuestSigaction, mask) == 12);
 
 namespace {
 using GuestHandler = void (APS5_VABI *)(int);
@@ -97,6 +89,38 @@ AlarmState& Alarms() {
     static auto* state = new AlarmState();
     return *state;
 }
+
+bool signalsPrepared = false;
+
+bool PrepareSignals(void*) {
+    auto& alarms = Alarms();
+    std::lock(registration, alarms.lock);
+    signalsPrepared = true;
+    return true;
+}
+
+bool ParentSignals(void*, bool) noexcept {
+    if (!signalsPrepared) return true;
+    signalsPrepared = false;
+    Alarms().lock.unlock();
+    registration.unlock();
+    return true;
+}
+
+bool ChildSignals(void*) noexcept {
+    Alarms().deadline.reset();
+    Alarms().threadStarted = false;
+    std::construct_at(&Alarms().changed);
+    return ParentSignals(nullptr, true);
+}
+
+struct SignalForkRegistration {
+    SignalForkRegistration() {
+        const GuestForkHooks hooks{300, PrepareSignals, ParentSignals, ChildSignals, nullptr};
+        if (GuestRegisterForkHooks_nid_no_patch(&hooks) != 0)
+            throw std::runtime_error("libkernel: registering signal fork hooks failed");
+    }
+} signalForkRegistration;
 
 void ExpireAlarm() {
     std::uintptr_t handler = 0;

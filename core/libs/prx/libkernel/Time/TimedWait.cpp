@@ -1,8 +1,10 @@
 #include "prx/libkernel/Time/include/TimedWait.hpp"
 #include "prx/libkernel/Pthread/include/WindowsThreadLocal.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
 
 #include <cstdlib>
 #include <limits>
+#include <memory>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -128,6 +130,28 @@ namespace {
 Waiter* ThisThreadWaiter() {
     return &WindowsThreadLocal<Waiter>::Get();
 }
+
+bool PrepareForkWaiter(void*) {
+    const auto* waiter = ThisThreadWaiter();
+    return !waiter->busy && !waiter->queued;
+}
+
+bool ParentForkWaiter(void*, bool) noexcept { return true; }
+
+bool ChildForkWaiter(void*) noexcept {
+    auto* waiter = ThisThreadWaiter();
+    std::construct_at(waiter);
+    WaitState().own.store(0);
+    return waiter->event != nullptr;
+}
+
+struct WaiterForkRegistration {
+    WaiterForkRegistration() {
+        const GuestForkHooks hooks{550, PrepareForkWaiter, ParentForkWaiter, ChildForkWaiter, nullptr};
+        if (GuestRegisterForkHooks_nid_no_patch(&hooks) != 0)
+            throw std::runtime_error("libkernel: registering wait fork hooks failed");
+    }
+} waiterForkRegistration;
 
 HANDLE ThreadTimer(unsigned kind) {
     auto& timer = ThisThreadWaiter()->sleepTimers[kind];
