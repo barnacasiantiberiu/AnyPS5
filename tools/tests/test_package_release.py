@@ -1,3 +1,4 @@
+import io
 import os
 import sys
 import tarfile
@@ -41,6 +42,93 @@ class ReleasePackageTests(unittest.TestCase):
         binary.write_bytes(b"relinker bytes")
         self.addCleanup(patch.stopall)
         patch.object(package_release, "ROOT", self.source, create=True).start()
+
+    def windows_runtime(self, name="configured toolchain"):
+        runtime = self.root / name / "bin"
+        runtime.mkdir(parents=True)
+        (runtime / "g++.exe").write_bytes(b"compiler")
+        for dll in ("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"):
+            (runtime / dll).write_bytes(f"runtime {dll}".encode())
+        (self.build / "core/relinker/relinker.exe").write_bytes(b"windows relinker")
+        return runtime
+
+    def test_windows_archives_use_the_configured_compiler_runtime_with_spaces(self):
+        runtime = self.windows_runtime()
+        for cache_type in ("STRING", "FILEPATH"):
+            with self.subTest(cache_type=cache_type):
+                (self.build / "CMakeCache.txt").write_text(
+                    f"CMAKE_CXX_COMPILER_AR:FILEPATH={self.root / 'unrelated' / 'gcc-ar.exe'}\n"
+                    f"CMAKE_CXX_COMPILER:{cache_type}={(runtime / 'g++.exe').as_posix()}\n", encoding="utf-8")
+                with working_directory(self.source):
+                    package_release.package("windows", self.build, self.output, "v1.0")
+                expected = {"libs/libc.prx": b"library bytes"}
+                expected.update({f"libs/{dll}": f"runtime {dll}".encode() for dll in (
+                    "libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll")})
+                with zipfile.ZipFile(self.output / "prx-windows-v1.0.zip") as archive:
+                    self.assertEqual({name: archive.read(name) for name in archive.namelist()}, expected)
+                with tarfile.open(self.output / "prx-windows-v1.0.tar.gz") as archive:
+                    self.assertEqual({name: archive.extractfile(name).read() for name in archive.getnames()}, expected)
+                self.assertEqual((self.output / "relinker-v1.0.exe").read_bytes(), b"windows relinker")
+
+    def test_explicit_windows_runtime_overrides_the_compiler_cache(self):
+        runtime = self.windows_runtime("portable runtime override")
+        (self.build / "CMakeCache.txt").write_text(
+            f"CMAKE_CXX_COMPILER:FILEPATH={(self.root / 'absent' / 'g++.exe').as_posix()}\n", encoding="utf-8")
+        package_release.package("windows", self.build, self.output, "v1.0", runtime_dir=runtime)
+        with zipfile.ZipFile(self.output / "prx-windows-v1.0.zip") as archive:
+            self.assertEqual(archive.read("libs/libstdc++-6.dll"), b"runtime libstdc++-6.dll")
+
+    def test_windows_runtime_override_cli_works_without_a_cache(self):
+        runtime = self.windows_runtime()
+        with patch.object(sys, "argv", ["package_release.py", "--platform", "windows", "--build", str(self.build),
+                                      "--output", str(self.output), "--version", "v1.0", "--runtime-dir", str(runtime)]):
+            package_release.main()
+        with zipfile.ZipFile(self.output / "prx-windows-v1.0.zip") as archive:
+            self.assertEqual(archive.read("libs/libwinpthread-1.dll"), b"runtime libwinpthread-1.dll")
+
+    def test_linux_cli_rejects_windows_runtime_override(self):
+        with patch.object(sys, "argv", ["package_release.py", "--platform", "linux", "--build", str(self.build),
+                                      "--output", str(self.output), "--version", "v1.0", "--runtime-dir", "toolchain"]), \
+                patch.object(sys, "stderr", io.StringIO()) as error:
+            with self.assertRaises(SystemExit) as exited:
+                package_release.main()
+            self.assertEqual(exited.exception.code, 2)
+            self.assertIn("--runtime-dir requires --platform windows", error.getvalue())
+        self.assertFalse(self.output.exists())
+
+    def test_windows_missing_compiler_cache_creates_no_assets(self):
+        self.windows_runtime()
+        with self.assertRaisesRegex(RuntimeError, r"CMakeCache\.txt.*--runtime-dir"):
+            package_release.package("windows", self.build, self.output, "v1.0")
+        self.assertFalse(self.output.exists())
+
+    def test_windows_missing_or_relative_compiler_path_creates_no_assets(self):
+        self.windows_runtime()
+        for value in ("CMAKE_C_COMPILER:FILEPATH=/toolchain/gcc\n", "CMAKE_CXX_COMPILER:STRING=g++\n"):
+            with self.subTest(value=value):
+                (self.build / "CMakeCache.txt").write_text(value, encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "CMAKE_CXX_COMPILER.*--runtime-dir"):
+                    package_release.package("windows", self.build, self.output, "v1.0")
+                self.assertFalse(self.output.exists())
+
+    def test_missing_or_empty_windows_runtime_dll_preserves_existing_assets(self):
+        runtime = self.windows_runtime()
+        (self.build / "CMakeCache.txt").write_text(
+            f"CMAKE_CXX_COMPILER:FILEPATH={(runtime / 'g++.exe').as_posix()}\n", encoding="utf-8")
+        self.output.mkdir()
+        asset = self.output / "prx-windows-v1.0.zip"
+        asset.write_bytes(b"existing archive")
+        dll = runtime / "libwinpthread-1.dll"
+        for missing in (True, False):
+            with self.subTest(missing=missing):
+                if missing:
+                    dll.unlink()
+                else:
+                    dll.write_bytes(b"")
+                with self.assertRaisesRegex(RuntimeError, r"Missing or empty release file: .*libwinpthread-1\.dll"):
+                    package_release.package("windows", self.build, self.output, "v1.0")
+                self.assertEqual(list(self.output.iterdir()), [asset])
+                self.assertEqual(asset.read_bytes(), b"existing archive")
 
     def test_source_discovery_does_not_depend_on_working_directory(self):
         with working_directory(self.root):
@@ -97,6 +185,18 @@ class ReleasePackageTests(unittest.TestCase):
 
 
 class DocumentationAssetsTests(unittest.TestCase):
+    def test_docs_cli_rejects_runtime_directory_before_copying(self):
+        with patch.object(sys, "argv", ["package_release.py", "--docs", "docs", "--output", "output",
+                                      "--runtime-dir", "toolchain"]), \
+                patch.object(sys, "stderr", io.StringIO()) as error, \
+                patch.object(package_release, "collect_docs") as collect:
+            with self.assertRaises(SystemExit) as exited:
+                package_release.main()
+            self.assertEqual(exited.exception.code, 2)
+            self.assertIn("--docs cannot be combined", error.getvalue())
+            self.assertIn("--runtime-dir", error.getvalue())
+            collect.assert_not_called()
+
     def test_unique_nested_documents_are_flattened(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "source"

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <type_traits>
+#include "prx/libc/include/HostDescriptorFork.hpp"
 #ifdef _WIN32
 #include <io.h>
 #endif
@@ -70,6 +71,7 @@ public:
 
     GuestFilePrefix& GuestState() { return _guest; }
     bool Reopen(const std::filesystem::path& filename, const char* mode) {
+        HostDescriptorOperation operation;
         auto* previous = GetHandle();
         _guest = {};
         guestError = false;
@@ -123,6 +125,7 @@ public:
     }
 
     int Close() {
+        HostDescriptorOperation operation;
         GetHandle();
         const int result = std::fclose(std::exchange(_handle, nullptr));
         _guest.flags = 0;

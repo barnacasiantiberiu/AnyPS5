@@ -135,6 +135,7 @@ FileStream* APS5_VABI freopen_nid_postfix(const char* filename, const char* mode
 }
 
 FileStream* APS5_VABI fopen_nid_postfix(const char* filename, const char* mode) {
+    HostDescriptorOperation operation;
     if (!filename || !mode) throw std::runtime_error(std::string(__func__) + ": " + FOPEN_MSG_NULL_ARG);
     const auto parsed = ParseFileMode(mode);
     if (!parsed) {

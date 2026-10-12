@@ -1,6 +1,7 @@
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/GuestWriteWatch.hpp"
 #include "prx/libc/include/WindowsMappings.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -55,6 +56,20 @@ public:
 
     bool Available() const {
         return _base != 0;
+    }
+
+    bool PrepareFork() {
+        _lock.lock();
+        _forkPrepared = true;
+        return true;
+    }
+
+    bool ReleaseFork() noexcept {
+        if (_forkPrepared) {
+            _forkPrepared = false;
+            _lock.unlock();
+        }
+        return true;
     }
 
     bool Contains(const void* pointer, std::size_t bytes) const {
@@ -245,6 +260,7 @@ private:
 #endif
 
     std::mutex _lock;
+    bool _forkPrepared = false;
     std::map<std::uintptr_t, std::uintptr_t> _used;
     std::vector<std::pair<std::uintptr_t, std::uintptr_t>> _holes;
     std::vector<std::pair<std::uintptr_t, std::uintptr_t>> _hostRegions;
@@ -265,6 +281,29 @@ public:
 };
 
 const bool g_reserved = (Arena::Get(), true);
+
+bool PrepareArena(void*) { return Arena::Get().PrepareFork(); }
+bool ReleaseArena(void*) noexcept { return Arena::Get().ReleaseFork(); }
+bool ParentArena(void* context, bool) noexcept { return ReleaseArena(context); }
+
+#ifdef _WIN32
+bool PrepareMappings(void*) { return WindowsMappings::Get().PrepareFork(); }
+bool ParentMappings(void*, bool created) noexcept { return WindowsMappings::Get().ReleaseFork(created); }
+bool ChildMappings(void*) noexcept { return WindowsMappings::Get().ReleaseFork(true); }
+#endif
+
+struct ArenaForkRegistration {
+    ArenaForkRegistration() {
+        const GuestForkHooks arenaHooks{430, PrepareArena, ParentArena, ReleaseArena, nullptr};
+        if (GuestRegisterForkHooks_nid_no_patch(&arenaHooks) != 0)
+            throw std::runtime_error("libc: registering arena fork hooks failed");
+#ifdef _WIN32
+        const GuestForkHooks mappingHooks{440, PrepareMappings, ParentMappings, ChildMappings, nullptr};
+        if (GuestRegisterForkHooks_nid_no_patch(&mappingHooks) != 0)
+            throw std::runtime_error("libc: registering mapping fork hooks failed");
+#endif
+    }
+} arenaForkRegistration;
 
 }
 

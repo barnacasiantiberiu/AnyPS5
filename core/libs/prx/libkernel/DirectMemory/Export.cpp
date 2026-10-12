@@ -4,6 +4,7 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
 #include "prx/libkernel/DirectMemory/DirectMemory.hpp"
 #include "prx/libkernel/Pthread/include/Pthread.hpp"
 #ifdef _WIN32
@@ -84,6 +85,42 @@ PrtAperture g_prtApertures[PRT_APERTURE_COUNT] = {};
 
 std::mutex g_flexibleLock;
 std::map<uintptr_t, size_t> g_flexibleRanges;
+bool g_memoryStatePrepared = false;
+#ifdef _WIN32
+std::mutex g_workingSetLock;
+#endif
+
+bool PrepareMemoryState(void*) {
+#ifdef _WIN32
+    std::lock(g_rangeNameLock, g_prtLock, g_flexibleLock, g_workingSetLock);
+#else
+    std::lock(g_rangeNameLock, g_prtLock, g_flexibleLock);
+#endif
+    g_memoryStatePrepared = true;
+    return true;
+}
+
+bool ReleaseMemoryState(void*) noexcept {
+    if (!g_memoryStatePrepared) return true;
+    g_memoryStatePrepared = false;
+#ifdef _WIN32
+    g_workingSetLock.unlock();
+#endif
+    g_flexibleLock.unlock();
+    g_prtLock.unlock();
+    g_rangeNameLock.unlock();
+    return true;
+}
+
+bool ParentMemoryState(void* context, bool) noexcept { return ReleaseMemoryState(context); }
+
+struct MemoryStateForkRegistration {
+    MemoryStateForkRegistration() {
+        const GuestForkHooks hooks{360, PrepareMemoryState, ParentMemoryState, ReleaseMemoryState, nullptr};
+        if (GuestRegisterForkHooks_nid_no_patch(&hooks) != 0)
+            throw std::runtime_error("libkernel: registering memory state fork hooks failed");
+    }
+} memoryStateForkRegistration;
 
 size_t _flexibleUsedLocked() {
     size_t used = 0;
@@ -480,8 +517,6 @@ bool PageRange(void* address, std::uint64_t length, std::uintptr_t& start, std::
 }
 
 #ifdef _WIN32
-std::mutex g_workingSetLock;
-
 bool HostRangeAccessible(std::uintptr_t start, std::uintptr_t end) {
     for (auto cursor = start; cursor < end;) {
         MEMORY_BASIC_INFORMATION region{};

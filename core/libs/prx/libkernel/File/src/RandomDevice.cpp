@@ -1,5 +1,6 @@
 #include "prx/libkernel/File/include/RandomDevice.hpp"
 #include "prx/libc/include/HostEntropy.hpp"
+#include "prx/libc/include/HostDescriptorFork.hpp"
 
 #include <mutex>
 #include <set>
@@ -26,6 +27,7 @@ bool IsRandomDevicePath(std::string_view path) {
 }
 
 int OpenRandomDevice() {
+    const HostDescriptorOperation operation;
 #ifdef _WIN32
     const int fd = ::_open("NUL", _O_RDONLY | _O_BINARY);
 #else
@@ -38,11 +40,13 @@ int OpenRandomDevice() {
 }
 
 bool IsRandomDevice(int fd) {
+    const HostDescriptorOperation operation;
     std::lock_guard lock(g_mutex);
     return g_descriptors.contains(fd);
 }
 
 bool ReadRandomDevice(int fd, void* buf, std::size_t nbytes) {
+    const HostDescriptorOperation operation;
     std::lock_guard lock(g_mutex);
     if (!g_descriptors.contains(fd)) return false;
     HostEntropy_nid_no_patch(buf, nbytes);
@@ -50,11 +54,13 @@ bool ReadRandomDevice(int fd, void* buf, std::size_t nbytes) {
 }
 
 void RememberRandomDevice(int fd) {
+    const HostDescriptorOperation operation;
     std::lock_guard lock(g_mutex);
     g_descriptors.insert(fd);
 }
 
 void ForgetRandomDevice(int fd) {
+    const HostDescriptorOperation operation;
     std::lock_guard lock(g_mutex);
     g_descriptors.erase(fd);
 }

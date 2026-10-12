@@ -28,6 +28,7 @@
 #endif
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/ApplicationHeap.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
 
 namespace {
 // Guest prefixes (without leading slashes) mapped to host directories, e.g. save-data mount points:
@@ -187,6 +188,40 @@ struct WrittenPathRegistry {
     WriteMark mark = Now();
 };
 WrittenPathRegistry& Written() { static WrittenPathRegistry registry; return registry; }
+
+bool pathsPrepared = false;
+
+bool PreparePaths(void*) {
+    auto& directories = Directories();
+    auto& aliases = Aliases();
+    auto& written = Written();
+    if (std::try_lock(directories.mutex, aliases.mutex, written.syncMutex, written.mutex) != -1) {
+        errno = 35;
+        return false;
+    }
+    pathsPrepared = true;
+    return true;
+}
+
+bool ReleasePaths(void*) noexcept {
+    if (!pathsPrepared) return true;
+    pathsPrepared = false;
+    Written().mutex.unlock();
+    Written().syncMutex.unlock();
+    Aliases().mutex.unlock();
+    Directories().mutex.unlock();
+    return true;
+}
+
+bool ParentPaths(void* context, bool) noexcept { return ReleasePaths(context); }
+
+struct PathForkRegistration {
+    PathForkRegistration() {
+        const GuestForkHooks hooks{200, PreparePaths, ParentPaths, ReleasePaths, nullptr};
+        if (GuestRegisterForkHooks_nid_no_patch(&hooks) != 0)
+            throw std::runtime_error("libc: registering path fork hooks failed");
+    }
+} pathForkRegistration;
 #ifdef _WIN32
 std::optional<WriteMark> WriteTime(const std::filesystem::path& path) {
     WIN32_FILE_ATTRIBUTE_DATA data;

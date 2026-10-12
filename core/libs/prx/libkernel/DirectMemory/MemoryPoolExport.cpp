@@ -4,6 +4,8 @@
 #include <mutex>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
+#include <stdexcept>
 #include "DirectMemory.hpp"
 
 namespace {
@@ -16,10 +18,37 @@ struct PoolState {
     size_t committedBytes = 0;
 };
 
+bool poolForkPrepared = false;
+
 PoolState& Pool() {
     static PoolState* state = new PoolState();
     return *state;
 }
+
+bool PreparePool(void*) {
+    auto& pool = Pool();
+    pool.mutex.lock();
+    poolForkPrepared = true;
+    return true;
+}
+
+bool ReleasePool(void*) noexcept {
+    if (poolForkPrepared) {
+        poolForkPrepared = false;
+        Pool().mutex.unlock();
+    }
+    return true;
+}
+
+bool ParentPool(void* context, bool) noexcept { return ReleasePool(context); }
+
+struct PoolForkRegistration {
+    PoolForkRegistration() {
+        const GuestForkHooks hooks{370, PreparePool, ParentPool, ReleasePool, nullptr};
+        if (GuestRegisterForkHooks_nid_no_patch(&hooks) != 0)
+            throw std::runtime_error("libkernel: registering memory pool fork hooks failed");
+    }
+} poolForkRegistration;
 
 bool PageAligned(uint64_t v) { return (v & (PS5_PAGE_SIZE - 1)) == 0; }
 

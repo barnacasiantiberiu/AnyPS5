@@ -2,6 +2,7 @@
 #include "prx/libkernel/File/include/FileFlags.hpp"
 #include "prx/libkernel/File/include/SharedMemory.hpp"
 #include "prx/libc/include/CreationMask.hpp"
+#include "prx/libc/include/HostDescriptorFork.hpp"
 #include "prx/libkernel/File/include/File.hpp"
 
 #include <cerrno>
@@ -451,6 +452,7 @@ int TruncateSharedMemory_nid_no_patch(int descriptor, std::int64_t length) {
 }
 
 extern "C" int APS5_VABI shm_open_nid_postfix(const char* path, int flags, int mode) {
+    const HostDescriptorOperation operation;
     const int accessMode = flags & SCE_KERNEL_O_ACCMODE;
     if (accessMode != SCE_KERNEL_O_RDONLY && accessMode != SCE_KERNEL_O_RDWR) return Fail(GuestInvalid);
     if ((flags & ~AcceptedFlags) != 0) return Fail(GuestInvalid);

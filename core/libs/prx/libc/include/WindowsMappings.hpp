@@ -14,6 +14,8 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <cerrno>
+#include "prx/libc/include/MemoryForkHandles.hpp"
 
 namespace GuestArena {
 
@@ -22,6 +24,34 @@ public:
     static WindowsMappings& Get() {
         static WindowsMappings mappings;
         return mappings;
+    }
+
+    bool PrepareFork() {
+        mutex.lock();
+        forkPrepared = true;
+        for (const auto& [address, view] : views) {
+            if (view.hostWrites != 0 || view.page->pins != 0) {
+                errno = 35;
+                return false;
+            }
+            forkHandles.Add(view.section->handle);
+        }
+        if (forkHandles.Prepare()) return true;
+        errno = 5;
+        return false;
+    }
+
+    bool ReleaseFork(bool created) noexcept {
+        if (!forkPrepared) return true;
+        if (created) {
+            processHasForked = true;
+            cleanRanges.clear();
+        }
+        const bool success = forkHandles.Restore();
+        forkPrepared = false;
+        mutex.unlock();
+        if (!success) errno = 5;
+        return success;
     }
 
     void* Reserve(void* address, std::size_t bytes) {
@@ -240,7 +270,7 @@ public:
                 auto& view = found->second;
                 const auto stop = std::min(std::min(end, base + pageBytes), nextClean == cleanRanges.end() ? end : nextClean->first);
                 if (view.protection == PAGE_NOACCESS) return false;
-                const bool pinned = view.page->pins != 0;
+                const bool pinned = view.page->pins != 0 || processHasForked;
                 if (pinned || view.seen != view.page->generation) {
                     const auto needed = (stop - cursor + 4095) / 4096;
                     if (needed > capacity - *count) {
@@ -432,6 +462,9 @@ private:
     std::map<std::uintptr_t, View> views;
     std::map<std::pair<std::uintptr_t, std::uint64_t>, std::weak_ptr<SharedPage>> physical;
     std::mutex mutex;
+    MemoryForkHandles forkHandles;
+    bool forkPrepared = false;
+    bool processHasForked = false;
     AllocateFunction allocate = nullptr;
     MapFunction map = nullptr;
     UnmapFunction unmap = nullptr;

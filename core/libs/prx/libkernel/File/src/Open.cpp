@@ -1,6 +1,7 @@
 #include "prx/libkernel/File/include/FileFlags.hpp"
 #include "prx/libkernel/File/include/NativeStat.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/HostDescriptorFork.hpp"
 #include "prx/libc/include/FilesystemError.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libkernel/File/include/File.hpp"
@@ -15,6 +16,7 @@
 
 #include <cerrno>
 #include <cstdarg>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -195,8 +197,23 @@ static int OpenNative(const std::filesystem::path& native, int flags, std::uint1
 extern "C" {
 
 int APS5_VABI sceKernelOpen(const char* path, int flags, std::uint16_t mode) {
+    HostDescriptorOperation operation;
     if (path != nullptr && *path == '\0') return SCE_KERNEL_ERROR_ENOENT;
     APS5_LOG_OUT("path=%s flags=0x%X nativeFlags=0x%X mode=0%o", path, flags, MapFlags(flags), mode);
+    if (path != nullptr && std::strcmp(path, "/dev/null") == 0) {
+        if ((flags & SCE_KERNEL_O_DIRECTORY) != 0) return SceErrorFromErrno(ENOTDIR);
+        if ((flags & (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_EXCL)) == (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_EXCL))
+            return SceErrorFromErrno(EEXIST);
+        const int nativeFlags = MapFlags(flags & ~(SCE_KERNEL_O_CREAT | SCE_KERNEL_O_EXCL | SCE_KERNEL_O_TRUNC));
+#ifdef _WIN32
+        const int descriptor = NativeOpen(L"\\\\.\\NUL", nativeFlags, mode);
+#else
+        const int descriptor = NativeOpen("/dev/null", nativeFlags, mode);
+#endif
+        if (descriptor < 0) return SceErrorFromErrno(errno);
+        File::RememberDescriptor(descriptor, flags);
+        return descriptor;
+    }
     if (path != nullptr && File::IsRandomDevicePath(path)) {
         if ((flags & SCE_KERNEL_O_ACCMODE) != SCE_KERNEL_O_RDONLY) throw std::runtime_error(std::string(__func__) + ": writing to " + path + " is not implemented");
         const int fd = File::OpenRandomDevice();
@@ -210,6 +227,7 @@ int APS5_VABI sceKernelOpen(const char* path, int flags, std::uint16_t mode) {
 }
 
 int OpenInDirectory_nid_no_patch(int directory, const char* path, int flags, std::uint16_t mode) {
+    HostDescriptorOperation operation;
     int error = 0;
     const char* base = GetDirectoryDescriptorPath_nid_no_patch(directory, &error);
     if (base == nullptr) return SceErrorFromErrno(error);
@@ -217,6 +235,7 @@ int OpenInDirectory_nid_no_patch(int directory, const char* path, int flags, std
 }
 
 int APS5_VABI sceKernelClose(int d) {
+    HostDescriptorOperation operation;
     if (d >= GuestSockets::FirstDescriptor) return GuestSockets::Close(d) == 0 ? 0 : SceKernelError(*__error_nid_postfix());
     File::ForgetRandomDevice(d);
     File::ForgetDescriptor(d);

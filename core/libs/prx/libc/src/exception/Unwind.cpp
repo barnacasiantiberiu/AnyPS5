@@ -8,6 +8,8 @@
 #endif
 #ifdef _WIN32
 #include <windows.h>
+#include "prx/libc/include/ForkMutexOwner.hpp"
+#include "prx/libc/include/ForkRecursiveMutex.hpp"
 #include <algorithm>
 #include <array>
 #include <map>
@@ -164,11 +166,12 @@ bool DecodeCandidate(_Unwind_Context& context, Frame& frame, const Lookup& query
 #ifdef _WIN32
 using FrameIndex = std::vector<std::pair<Word, const Byte*>>;
 using ImageKey = std::array<Word, 6>;
+ForkRecursiveMutex frameIndexMutex;
+ForkMutexOwner frameIndexForkOwner{frameIndexMutex, 60};
 
 const FrameIndex& IndexFrames(const ImageKey& key, const Byte* begin, const Byte* end) {
-    static std::mutex mutex;
     static std::map<ImageKey, FrameIndex> indexes;
-    std::lock_guard lock(mutex);
+    std::lock_guard lock(frameIndexMutex);
     const auto [entry, inserted] = indexes.try_emplace(key);
     auto& index = entry->second;
     if (!inserted) return index;

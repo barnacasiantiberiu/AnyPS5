@@ -22,6 +22,13 @@
 
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/ApplicationHeap.hpp"
+#include "prx/libc/include/ForkMutexOwner.hpp"
+#include "prx/libc/include/ForkRecursiveMutex.hpp"
+
+namespace {
+ForkRecursiveMutex executeOnceMutex;
+ForkMutexOwner executeOnceForkOwner{executeOnceMutex, 21};
+}
 
 extern "C" {
 
@@ -97,8 +104,7 @@ const std::error_category* _ZSt17iostream_categoryv_nid_postfix() { return &std:
 int APS5_VABI _ZSt13_Execute_onceRSt9once_flagPFiPvS1_PS1_ES1__nid_postfix(
     int* flag, int (APS5_VABI *callback)(void*, void*, void**), void* arg
 ) {
-    static std::recursive_mutex mutex;
-    std::lock_guard lock(mutex);
+    std::lock_guard lock(executeOnceMutex);
     if (*flag != 0) return 1;
     if (callback(nullptr, arg, nullptr) == 0) return 0;
     *flag = 1;

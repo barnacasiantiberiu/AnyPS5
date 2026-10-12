@@ -3,6 +3,7 @@
 #include "prx/libkernel/File/include/File.hpp"
 #include "prx/libkernel/File/include/RandomDevice.hpp"
 #include "prx/libc/include/GuestArena.hpp"
+#include "prx/libc/include/HostDescriptorFork.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 
 #include <cerrno>
@@ -15,6 +16,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 
 #ifdef _WIN32
 #include <io.h>
@@ -104,9 +106,93 @@ constexpr std::size_t OldGuestLockSize = 24;
 
 enum class Kind { File, Directory, Pipe, Device, RandomDevice };
 
+class DescriptorStatus {
+public:
+    explicit DescriptorStatus(int value) {
+#ifdef _WIN32
+        SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+        mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0, sizeof(LONG), nullptr);
+        if (mapping == nullptr) throw std::system_error(GetLastError(), std::system_category(), "descriptor status mapping");
+        flags = static_cast<volatile LONG*>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(LONG)));
+        if (flags == nullptr) {
+            const DWORD error = GetLastError();
+            CloseHandle(mapping);
+            throw std::system_error(error, std::system_category(), "descriptor status view");
+        }
+        mutex = CreateMutexW(&security, FALSE, nullptr);
+        if (mutex == nullptr) {
+            const DWORD error = GetLastError();
+            UnmapViewOfFile(const_cast<LONG*>(flags));
+            CloseHandle(mapping);
+            throw std::system_error(error, std::system_category(), "descriptor status mutex");
+        }
+        InterlockedExchange(flags, value);
+#else
+        flags = value;
+#endif
+    }
+
+    ~DescriptorStatus() {
+#ifdef _WIN32
+        UnmapViewOfFile(const_cast<LONG*>(flags));
+        CloseHandle(mapping);
+        CloseHandle(mutex);
+#endif
+    }
+
+    DescriptorStatus(const DescriptorStatus&) = delete;
+    DescriptorStatus& operator=(const DescriptorStatus&) = delete;
+
+    int Load() const {
+#ifdef _WIN32
+        return InterlockedCompareExchange(flags, 0, 0);
+#else
+        return flags;
+#endif
+    }
+
+    void Store(int value) {
+#ifdef _WIN32
+        InterlockedExchange(flags, value);
+#else
+        flags = value;
+#endif
+    }
+
+    class Guard {
+    public:
+        explicit Guard(DescriptorStatus& status) : status(status) {
+#ifdef _WIN32
+            const DWORD result = WaitForSingleObject(status.mutex, INFINITE);
+            if (result != WAIT_OBJECT_0 && result != WAIT_ABANDONED)
+                throw std::system_error(GetLastError(), std::system_category(), "descriptor status lock");
+#endif
+        }
+        ~Guard() {
+#ifdef _WIN32
+            if (!ReleaseMutex(status.mutex)) std::terminate();
+#endif
+        }
+        Guard(const Guard&) = delete;
+        Guard& operator=(const Guard&) = delete;
+
+    private:
+        DescriptorStatus& status;
+    };
+
+private:
+#ifdef _WIN32
+    HANDLE mapping = nullptr;
+    HANDLE mutex = nullptr;
+    volatile LONG* flags = nullptr;
+#else
+    int flags = 0;
+#endif
+};
+
 struct Entry {
     bool closeOnExec = false;
-    std::shared_ptr<int> status;
+    std::shared_ptr<DescriptorStatus> status;
 };
 
 std::mutex g_mutex;
@@ -185,7 +271,7 @@ void SetPipeNonblocking(int fd, bool nonblocking, const char* function) {
 Entry InitialEntry(int fd) {
     int status = 0;
     if (::GetFileType(NativeHandle(fd)) == FILE_TYPE_PIPE && (PipeState(fd, "fcntl") & PIPE_NOWAIT) != 0) status |= Nonblocking;
-    return {false, std::make_shared<int>(status)};
+    return {false, std::make_shared<DescriptorStatus>(status)};
 }
 
 void ApplyHostStatus(int fd, Kind kind, int changed, int next, const char* function) {
@@ -247,7 +333,7 @@ Entry InitialEntry(int fd) {
     if (host & O_ASYNC) status |= Asynchronous;
     if ((host & O_SYNC) == O_SYNC) status |= Synchronous;
     if (host & O_DIRECT) status |= Direct;
-    return {(descriptorFlags & FD_CLOEXEC) != 0, std::make_shared<int>(status)};
+    return {(descriptorFlags & FD_CLOEXEC) != 0, std::make_shared<DescriptorStatus>(status)};
 }
 
 void ApplyHostStatus(int fd, Kind, int changed, int next, const char* function) {
@@ -295,23 +381,38 @@ Entry& Materialize(int fd) {
 }
 
 int ChangeStatus(int fd, Kind kind, int mask, int value, const char* function) {
+    const HostDescriptorOperation operation;
     std::lock_guard lock(g_mutex);
-    auto& status = *Materialize(fd).status;
+    auto& state = *Materialize(fd).status;
+    const DescriptorStatus::Guard stateLock(state);
+    int status = state.Load();
+#ifndef _WIN32
+    const int host = HostStatus(fd, function);
+    status = (status & ~(Nonblocking | Append)) | ((host & O_NONBLOCK) ? Nonblocking : 0) | ((host & O_APPEND) ? Append : 0);
+#endif
     const int next = (status & ~mask) | (value & mask);
     const int changed = status ^ next;
     if ((changed & Asynchronous) && (kind == Kind::Pipe || kind == Kind::Device)) Unsupported(function, "O_ASYNC", kind, fd);
     if ((changed & Synchronous) && kind == Kind::File) Unsupported(function, "changing O_FSYNC", kind, fd);
     ApplyHostStatus(fd, kind, changed, next, function);
-    status = next;
+    state.Store(next);
     return 0;
 }
 
 int CurrentStatus(int fd) {
+    const HostDescriptorOperation operation;
     std::lock_guard lock(g_mutex);
-    return *Materialize(fd).status;
+    const int status = Materialize(fd).status->Load();
+#ifdef _WIN32
+    return status;
+#else
+    const int host = HostStatus(fd, "fcntl");
+    return (status & ~(Nonblocking | Append)) | ((host & O_NONBLOCK) ? Nonblocking : 0) | ((host & O_APPEND) ? Append : 0);
+#endif
 }
 
 void SetCloseOnExec(int fd, bool value) {
+    const HostDescriptorOperation operation;
     std::lock_guard lock(g_mutex);
     Materialize(fd).closeOnExec = value;
 }
@@ -367,13 +468,17 @@ int RecordLock(int fd, int command, std::intptr_t argument) {
 }
 
 int ReadAheadControl(int fd, int command, std::intptr_t argument) {
+    const HostDescriptorOperation operation;
     const auto kind = Classify(fd, "fcntl");
     if (!kind || *kind == Kind::Pipe) return Fail(GuestEbadf);
     if (*kind != Kind::File) return Fail(GuestEnotty);
     std::lock_guard lock(g_mutex);
-    auto& status = *Materialize(fd).status;
+    auto& state = *Materialize(fd).status;
+    const DescriptorStatus::Guard stateLock(state);
+    int status = state.Load();
     if (command == DarwinReadAhead || argument >= 0) status |= ReadAheadFlag;
     else status &= ~ReadAheadFlag;
+    state.Store(status);
     return 0;
 }
 
@@ -424,6 +529,7 @@ int Fcntl(int fd, int command, std::intptr_t argument) {
             return duplicate;
         }
         case GetDescriptorFlags: {
+            const HostDescriptorOperation operation;
             if (!Classify(fd, "fcntl")) return Fail(GuestEbadf);
             std::lock_guard lock(g_mutex);
             return Materialize(fd).closeOnExec ? CloseOnExec : 0;
@@ -492,17 +598,20 @@ int Ioctl(int fd, std::uint64_t request, void* argument) {
 }
 
 void RememberDescriptor(int fd, int openFlags) {
+    const HostDescriptorOperation operation;
     std::lock_guard lock(g_mutex);
-    g_entries[fd] = Entry{(openFlags & OpenCloseOnExec) != 0, std::make_shared<int>(openFlags & OpenStatusFlags)};
+    g_entries[fd] = Entry{(openFlags & OpenCloseOnExec) != 0, std::make_shared<DescriptorStatus>(openFlags & OpenStatusFlags)};
 }
 
 void ShareDescriptor(int from, int to) {
+    const HostDescriptorOperation operation;
     std::lock_guard lock(g_mutex);
     auto status = Materialize(from).status;
     g_entries[to] = Entry{false, std::move(status)};
 }
 
 void ForgetDescriptor(int fd) {
+    const HostDescriptorOperation operation;
     std::lock_guard lock(g_mutex);
     g_entries.erase(fd);
 }

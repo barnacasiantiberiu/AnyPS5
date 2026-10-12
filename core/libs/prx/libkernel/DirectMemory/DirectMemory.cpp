@@ -3,6 +3,8 @@
 #include "prx/libc/include/GuestAllocations.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/GuestWriteWatch.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
+#include "prx/libc/include/MemoryForkHandles.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <iterator>
@@ -285,6 +287,10 @@ public:
     }
 
     int MemoryType() const { return memoryType; }
+
+#ifdef _WIN32
+    HANDLE SectionHandle() const { return section; }
+#endif
 
 #if defined(__linux__)
     int File() const { return file; }
@@ -741,6 +747,48 @@ void EraseProtections(std::uintptr_t start, std::uintptr_t end) {
 
 std::mutex g_reservationLock;
 std::map<std::uintptr_t, std::uintptr_t> g_reservations;
+bool g_forkPrepared = false;
+#ifdef _WIN32
+MemoryForkHandles g_forkHandles;
+#endif
+
+bool PrepareDirectMemory(void*) {
+    std::lock(g_directLock, g_protectionLock, g_reservationLock);
+    g_forkPrepared = true;
+#ifdef _WIN32
+    for (const auto& [address, page] : g_physPages) g_forkHandles.Add(page.backing->SectionHandle());
+    for (const auto& [address, mapping] : g_directMappings) g_forkHandles.Add(mapping.backing->SectionHandle());
+    if (!g_forkHandles.Prepare()) {
+        errno = 5;
+        return false;
+    }
+#endif
+    return true;
+}
+
+bool ReleaseDirectMemory(void*) noexcept {
+    if (!g_forkPrepared) return true;
+    bool success = true;
+#ifdef _WIN32
+    success = g_forkHandles.Restore();
+#endif
+    g_forkPrepared = false;
+    g_reservationLock.unlock();
+    g_protectionLock.unlock();
+    g_directLock.unlock();
+    if (!success) errno = 5;
+    return success;
+}
+
+bool ParentDirectMemory(void* context, bool) noexcept { return ReleaseDirectMemory(context); }
+
+struct DirectMemoryForkRegistration {
+    DirectMemoryForkRegistration() {
+        const GuestForkHooks hooks{420, PrepareDirectMemory, ParentDirectMemory, ReleaseDirectMemory, nullptr};
+        if (GuestRegisterForkHooks_nid_no_patch(&hooks) != 0)
+            throw std::runtime_error("libkernel: registering direct memory fork hooks failed");
+    }
+} directMemoryForkRegistration;
 
 void EraseReservations(const void* addr, size_t len) {
     const auto start = reinterpret_cast<std::uintptr_t>(addr);

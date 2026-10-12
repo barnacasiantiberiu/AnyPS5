@@ -9,6 +9,24 @@ import progress
 
 
 class ProgressTests(unittest.TestCase):
+    def test_table_does_not_round_incomplete_libraries_to_complete(self):
+        data = progress.summarize([
+            {"name": "libc", "done": 709, "todo": 3},
+            {"name": "libScePartial", "done": 1, "todo": 2},
+            {"name": "libSceComplete", "done": 712, "todo": 0},
+            {"name": "libScePending", "done": 0, "todo": 3},
+        ])
+        html = progress.table("System libraries", "Library", data)
+        self.assertIn("<tr><th>Library</th><th>Implemented</th><th>Total</th><th>%</th></tr>", html)
+        self.assertIn("<tr><td>libc</td><td>709</td><td>712</td><td>99.58%</td></tr>", html)
+        self.assertIn("<tr><td>libScePartial</td><td>1</td><td>3</td><td>33.33%</td></tr>", html)
+        self.assertIn("<tr><td>libSceComplete</td><td>712</td><td>712</td><td>100%</td></tr>", html)
+        self.assertIn("<tr><td>libScePending</td><td>0</td><td>3</td><td>0%</td></tr>", html)
+        self.assertIn("<tr><th>Total</th><th>1422</th><th>1430</th><th>99.44%</th></tr>", html)
+        large = progress.summarize([{"name": "libLarge", "done": 99999, "todo": 1}])
+        self.assertIn("<tr><td>libLarge</td><td>99999</td><td>100000</td><td>99.99%</td></tr>",
+                      progress.table("System libraries", "Library", large))
+
     def test_nonvoid_stub_wrappers_keep_callers_unimplemented(self):
         with tempfile.TemporaryDirectory() as directory:
             library = Path(directory) / "libSceExample"

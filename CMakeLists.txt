@@ -98,6 +98,11 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_nid_names.py)
         add_test(NAME release_package COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_package_release.py)
+        if(WIN32)
+            add_test(NAME windows_build_helpers COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/windows/test_helpers.py)
+            set_tests_properties(windows_build_helpers PROPERTIES TIMEOUT 30)
+        endif()
     endif()
 endif()
 

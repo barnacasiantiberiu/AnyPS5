@@ -1,4 +1,6 @@
 #include "prx/libc/include/GuestAllocations.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
+#include <cerrno>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -48,6 +50,46 @@ std::atomic<void (*)(std::uintptr_t, std::size_t)> invalidator{nullptr};
 std::atomic<bool (*)(std::uintptr_t, std::size_t)> pinWaiter{nullptr};
 std::atomic<void (*)(const Mapped&, std::uint64_t)> gpuMapObserver{nullptr};
 std::atomic<std::uint32_t> gpuMapObserverCalls{0};
+std::mutex observerRegistrationMutex;
+bool forkPrepared = false;
+
+bool PrepareAllocations(void*) {
+    if (std::try_lock(registry().mutex, observerRegistrationMutex) != -1) {
+        errno = 35;
+        return false;
+    }
+    forkPrepared = true;
+    if (gpuMapObserverCalls.load() != 0 || gpuMapObserver.load() != nullptr || pinWaiter.load() != nullptr) {
+        errno = 35;
+        return false;
+    }
+    for (const auto& [address, range] : registry().ranges) {
+        if (range.use_count() != 1) {
+            errno = 35;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ReleaseAllocations(void*) noexcept {
+    if (forkPrepared) {
+        forkPrepared = false;
+        observerRegistrationMutex.unlock();
+        registry().mutex.unlock();
+    }
+    return true;
+}
+
+bool ParentAllocations(void* context, bool) noexcept { return ReleaseAllocations(context); }
+
+struct AllocationForkRegistration {
+    AllocationForkRegistration() {
+        const GuestForkHooks hooks{400, PrepareAllocations, ParentAllocations, ReleaseAllocations, nullptr};
+        if (GuestRegisterForkHooks_nid_no_patch(&hooks) != 0)
+            throw std::runtime_error("libc: registering allocation fork hooks failed");
+    }
+} allocationForkRegistration;
 
 std::chrono::milliseconds pinWait() {
     static const std::chrono::milliseconds value{[] {
@@ -156,7 +198,10 @@ void GuestAllocationsInvalidate_nid_postfix(std::uintptr_t address, std::size_t 
 }
 
 void GuestAllocationsSetGpuMapObserver_nid_postfix(void (*callback)(const Mapped& ranges, std::uint64_t generation)) {
-    gpuMapObserver.store(callback);
+    {
+        std::lock_guard lock(observerRegistrationMutex);
+        gpuMapObserver.store(callback);
+    }
     while (gpuMapObserverCalls.load() != 0) std::this_thread::yield();
 }
 
@@ -165,6 +210,7 @@ void GuestAllocationsNoteGpuMapping_nid_postfix(void* mutation, const void* poin
 }
 
 void GuestAllocationsSetPinWaiter_nid_postfix(bool (*callback)(std::uintptr_t, std::size_t)) {
+    std::lock_guard lock(observerRegistrationMutex);
     pinWaiter.store(callback, std::memory_order_release);
 }
 
