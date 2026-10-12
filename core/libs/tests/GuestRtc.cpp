@@ -1,4 +1,5 @@
 #include "SceTypes.hpp"
+#include "tests/ModuleChecks.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <cstdint>
 #include <cstdlib>
@@ -39,7 +40,7 @@ int APS5_VABI sceRtcFormatRFC2822(char*, const RtcTick*, int);
 int APS5_VABI sceRtcFormatRFC2822LocalTime(char*, const RtcTick*);
 }
 
-static void Require(bool value) { if (!value) std::abort(); }
+using ModuleTest::Require;
 
 static void SetTimeZone(const char* zone) {
 #ifdef _WIN32

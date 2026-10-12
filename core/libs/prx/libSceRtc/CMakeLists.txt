@@ -8,8 +8,15 @@ if(BUILD_TESTING)
     target_link_libraries(guest_rtc_tests PRIVATE libSceRtc libc)
     configure_windows_unwind(guest_rtc_tests)
     add_test(NAME guest_rtc COMMAND guest_rtc_tests)
+    add_test_executable(guest_rtc_calendar_tests ${LIBS_INCLUDE_DIR}/tests/GuestRtcCalendar.cpp)
+    target_include_directories(guest_rtc_calendar_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_rtc_calendar_tests PRIVATE libSceRtc libc)
+    configure_windows_unwind(guest_rtc_calendar_tests)
+    add_test(NAME guest_rtc_calendar COMMAND guest_rtc_calendar_tests)
+    set_tests_properties(guest_rtc guest_rtc_calendar PROPERTIES
+        LABELS "module-functional;module:libSceRtc" TIMEOUT 30)
     if(WIN32)
-        set_tests_properties(guest_rtc PROPERTIES ENVIRONMENT_MODIFICATION
+        set_tests_properties(guest_rtc guest_rtc_calendar PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceRtc>")
     endif()
 endif()
