@@ -59,4 +59,15 @@ if(BUILD_TESTING)
         set_tests_properties(guest_savedata_cancel PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceSaveData.native>")
     endif()
+
+    add_test_executable(guest_savedata_icon_tests ${LIBS_INCLUDE_DIR}/tests/GuestSaveDataIcon.cpp)
+    target_include_directories(guest_savedata_icon_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_savedata_icon_tests PRIVATE libSceSaveData.native libc)
+    configure_windows_unwind(guest_savedata_icon_tests)
+    add_test(NAME guest_savedata_icon COMMAND guest_savedata_icon_tests)
+    set_tests_properties(guest_savedata_icon PROPERTIES TIMEOUT 30 LABELS "module-functional;module:libSceSaveData.native")
+    if(WIN32)
+        set_tests_properties(guest_savedata_icon PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceSaveData.native>")
+    endif()
 endif()
