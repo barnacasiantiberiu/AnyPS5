@@ -17,6 +17,15 @@
 
 ## Build and test
 
+### Private development: functional tests for every module
+
+- Keep each system library's changes, functional tests and technical-debt updates in its own commit. Shared test infrastructure has a separate commit. Do not rewrite already published commits just to combine later tests with an earlier implementation.
+- Every newly implemented or changed module must have PC-runnable functional tests registered with CTest labels `module-functional` and `module:<library-name>`, and a nonzero timeout of at most 30 seconds. Add affected dependent modules to validation when shared code changes.
+- Exercise public guest-ABI entry points and check concrete outputs against independent expected values or documented invariants. Cover valid inputs, boundary and invalid inputs, lifecycle/state isolation, and untouched output outside the permitted region where relevant. An export check, success return alone, or a test that only expects `NotImplemented` does not validate an implementation.
+- Run `python tools/test_modules.py --build-dir build` before committing or pushing module work. This builds, runs every registered functional module suite and saves per-module JUnit/logs, a JSON result and a separate progress snapshot. Skipped, disabled, missing or failed tests are failures. Use `--module <library-name>` repeatedly for targeted runs; use `--base <git-ref>` to require suites for every library changed from that ref.
+- Tests must fail when the behavior they protect is broken. For a new regression, demonstrate failure on the original implementation or a controlled local mutation, then restore the implementation and rerun successfully. Record the evidence and remaining limitations in the commit message or validation report.
+- Validation for this private project runs on the PC; PS5 hardware is not a prerequisite. Host tests and the implemented-export percentage are separate evidence, and neither establishes unmeasured console behavior. Keep unverified ABI details and differences in technical debt.
+
 Toolchains are listed in the [build instructions](docs/dev/BUILD.md).
 
 For relinker changes, use the [relinker-only build](docs/dev/BUILD.md#relinker-only) to build and test without third-party submodules, system libraries or a GPU. It also works on macOS. Changes to system libraries or shaders still need the full build and relevant runtime tests.
