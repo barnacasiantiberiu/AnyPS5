@@ -7,6 +7,7 @@
 #include <exception>
 #include <initializer_list>
 #include <limits>
+#include <stdexcept>
 
 extern "C" {
 int APS5_VABI sceRtcCheckValid(const RtcDateTime*);
@@ -456,6 +457,92 @@ int main() {
         Require(sceRtcConvertLocalTimeToUtc(&result, &result) == 0 && result.tick == source.tick);
     }
     SetTimeZone("UTC0");
+
+    const struct {
+        const char* zone;
+        std::int64_t offsetSeconds;
+    } fixedZones[] = {{"UTC0", 0}, {"XXX-5:30", 19800}, {"XXX+3", -10800}, {"XXX-0:30:45", 1845}, {"XXX+0:00:30", -30}};
+    const RtcDateTime future{3002, 1, 1, 0, 0, 0, 123456};
+    RtcTick futureTick{};
+    Require(sceRtcGetTick(&future, &futureTick) == 0);
+    for (const auto& fixedZone : fixedZones) {
+        SetTimeZone(fixedZone.zone);
+        const std::int64_t offsetTicks = fixedZone.offsetSeconds * 1000000;
+        for (std::uint64_t utcTick : {std::uint64_t{86400000000}, unixEpochTick - 1000000, unixEpochTick - 1, futureTick.tick, maxTick - 86400000000}) {
+            source.tick = utcTick;
+            const auto localTick = static_cast<std::uint64_t>(static_cast<std::int64_t>(utcTick) + offsetTicks);
+            Require(sceRtcConvertUtcToLocalTime(&source, &result) == 0 && result.tick == localTick);
+            Require(sceRtcConvertLocalTimeToUtc(&result, &result) == 0 && result.tick == utcTick);
+            Require(sceRtcConvertUtcToLocalTime(&source, &source) == 0 && source.tick == localTick);
+            Require(sceRtcConvertLocalTimeToUtc(&source, &source) == 0 && source.tick == utcTick);
+        }
+        for (std::uint64_t boundary : {std::uint64_t{0}, maxTick}) {
+            source.tick = boundary;
+            result.tick = 123;
+            const auto shifted = static_cast<std::int64_t>(boundary) + offsetTicks;
+            const bool valid = shifted >= 0 && shifted <= static_cast<std::int64_t>(maxTick);
+            Require(sceRtcConvertUtcToLocalTime(&source, &result) == (valid ? 0 : invalidValue));
+            Require(result.tick == (valid ? static_cast<std::uint64_t>(shifted) : 123));
+            result.tick = 123;
+            const auto unshifted = static_cast<std::int64_t>(boundary) - offsetTicks;
+            const bool reverseValid = unshifted >= 0 && unshifted <= static_cast<std::int64_t>(maxTick);
+            Require(sceRtcConvertLocalTimeToUtc(&source, &result) == (reverseValid ? 0 : invalidValue));
+            Require(result.tick == (reverseValid ? static_cast<std::uint64_t>(unshifted) : 123));
+            Require(sceRtcConvertUtcToLocalTime(&source, &source) == (valid ? 0 : invalidValue));
+            Require(source.tick == (valid ? static_cast<std::uint64_t>(shifted) : boundary));
+            source.tick = boundary;
+            Require(sceRtcConvertLocalTimeToUtc(&source, &source) == (reverseValid ? 0 : invalidValue));
+            Require(source.tick == (reverseValid ? static_cast<std::uint64_t>(unshifted) : boundary));
+        }
+    }
+    SetTimeZone("XXX-5:30");
+    tick.tick = unixEpochTick - 1;
+    Require(sceRtcFormatRFC3339LocalTime(text, &tick) == 0 && std::strcmp(text, "1970-01-01T05:29:59.99+05:30") == 0);
+    Require(sceRtcFormatRFC2822LocalTime(rfc2822, &tick) == 0 && std::strcmp(rfc2822, "Thu, 01 Jan 1970 05:29:59 +0530") == 0);
+    Require(sceRtcFormatRFC3339LocalTime(text, &futureTick) == 0 && std::strcmp(text, "3002-01-01T05:30:00.12+05:30") == 0);
+    SetTimeZone("XXX+3");
+    Require(sceRtcFormatRFC3339LocalTime(text, &tick) == 0 && std::strcmp(text, "1969-12-31T20:59:59.99-03:00") == 0);
+    Require(sceRtcFormatRFC2822LocalTime(rfc2822, &tick) == 0 && std::strcmp(rfc2822, "Wed, 31 Dec 1969 20:59:59 -0300") == 0);
+    SetTimeZone("UTC0");
+
+#ifdef _WIN32
+    const auto requireUnavailableOffset = [](auto operation) {
+        bool threw = false;
+        try {
+            operation();
+        } catch (const std::runtime_error& error) {
+            threw = true;
+            Require(std::strstr(error.what(), "host cannot determine local offset") != nullptr);
+        }
+        Require(threw);
+    };
+    for (const char* zone : {"PST8PDT", "", "Europe/Bucharest", "XX-5", "XXX-5:", "XXX-5:60", "XXX-5:30:60", "XXX-5:30DST", "XXX-24"}) {
+        SetTimeZone(zone);
+        for (std::uint64_t utcTick : {unixEpochTick - 1, futureTick.tick}) {
+            source.tick = utcTick;
+            result.tick = 123;
+            requireUnavailableOffset([&] { sceRtcConvertUtcToLocalTime(&source, &result); });
+            Require(result.tick == 123 && source.tick == utcTick);
+            requireUnavailableOffset([&] { sceRtcConvertLocalTimeToUtc(&source, &result); });
+            Require(result.tick == 123 && source.tick == utcTick);
+            requireUnavailableOffset([&] { sceRtcConvertUtcToLocalTime(&source, &source); });
+            Require(source.tick == utcTick);
+            requireUnavailableOffset([&] { sceRtcConvertLocalTimeToUtc(&source, &source); });
+            Require(source.tick == utcTick);
+            std::memset(text, 'x', sizeof(text));
+            char originalText[sizeof(text)];
+            std::memcpy(originalText, text, sizeof(text));
+            requireUnavailableOffset([&] { sceRtcFormatRFC3339LocalTime(text, &source); });
+            Require(std::memcmp(text, originalText, sizeof(text)) == 0);
+            std::memset(rfc2822, 'x', sizeof(rfc2822));
+            char originalRfc2822[sizeof(rfc2822)];
+            std::memcpy(originalRfc2822, rfc2822, sizeof(rfc2822));
+            requireUnavailableOffset([&] { sceRtcFormatRFC2822LocalTime(rfc2822, &source); });
+            Require(std::memcmp(rfc2822, originalRfc2822, sizeof(rfc2822)) == 0);
+        }
+    }
+    SetTimeZone("UTC0");
+#endif
 
 #ifndef _WIN32
     SetTimeZone("STD0DST,J1/0,J2/0");

@@ -2,9 +2,11 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <limits>
+#include <stdexcept>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 
@@ -95,14 +97,47 @@ std::uint64_t currentTick() {
     return UNIX_EPOCH_TICK + static_cast<std::uint64_t>(now);
 }
 
+#ifdef _WIN32
+bool hasFixedTimeZone() {
+    const char* cursor = std::getenv("TZ");
+    if (!cursor) return false;
+    for (int index = 0; index < 3; ++index, ++cursor) {
+        if (!((*cursor >= 'A' && *cursor <= 'Z') || (*cursor >= 'a' && *cursor <= 'z'))) return false;
+    }
+    if (*cursor == '+' || *cursor == '-') ++cursor;
+    for (int field = 0; field < 3; ++field) {
+        int value = 0;
+        int digits = 0;
+        while (digits < 2 && *cursor >= '0' && *cursor <= '9') {
+            value = value * 10 + (*cursor++ - '0');
+            ++digits;
+        }
+        if (digits == 0 || value > (field == 0 ? 23 : 59)) return false;
+        if (*cursor == '\0') return true;
+        if (*cursor++ != ':') return false;
+    }
+    return false;
+}
+#endif
+
 std::int64_t localOffsetSeconds(std::uint64_t utcTick) {
     const auto elapsed = std::chrono::microseconds{static_cast<std::int64_t>(utcTick) - static_cast<std::int64_t>(UNIX_EPOCH_TICK)};
     const auto seconds = static_cast<std::time_t>(std::chrono::floor<std::chrono::seconds>(elapsed).count());
     std::tm local{};
 #ifdef _WIN32
-    if (localtime_s(&local, &seconds) != 0) return 0;
+    if (localtime_s(&local, &seconds) != 0) {
+        if (hasFixedTimeZone()) {
+            _tzset();
+            int daylight = 0;
+            long timezone = 0;
+            if (_get_daylight(&daylight) == 0 && daylight == 0 && _get_timezone(&timezone) == 0) {
+                return -static_cast<std::int64_t>(timezone);
+            }
+        }
+        throw std::runtime_error("libSceRtc: host cannot determine local offset for this tick; an explicit fixed-offset TZ is required outside the CRT time range");
+    }
 #else
-    if (!localtime_r(&seconds, &local)) return 0;
+    if (!localtime_r(&seconds, &local)) throw std::runtime_error("libSceRtc: host cannot determine local offset for this tick");
 #endif
     const std::int64_t localSeconds = (daysFromCivil(local.tm_year + 1900, static_cast<unsigned>(local.tm_mon + 1), static_cast<unsigned>(local.tm_mday)) - UNIX_EPOCH_DAYS) * 86400
         + local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec;
