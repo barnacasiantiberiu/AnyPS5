@@ -10,6 +10,7 @@
 #include <mutex>
 #include <map>
 #include <memory>
+#include <limits>
 #include <vector>
 #include <stdexcept>
 #include <string>
@@ -83,14 +84,16 @@ public:
             } else {
                 if (memory.State != MEM_COMMIT) throw std::runtime_error("guest memory is not committed");
                 const auto mapped = views.find(cursor & ~(pageBytes - 1));
+                const DWORD applied = mapped == views.end() ? protection : normalize(mapped->second, protection);
+                const auto protectedEnd = mapped == views.end() ? stop : std::min(stop, mapped->first + pageBytes);
                 if (mapped != views.end()) {
-                    mapped->second.protection = protection;
+                    mapped->second.protection = applied;
                     mapped->second.armed = false;
                     invalidate(*mapped->second.page);
                 }
                 DWORD previous;
-                if (!VirtualProtect(reinterpret_cast<void*>(cursor), stop - cursor, protection, &previous)) fail("protect guest memory");
-                cursor = stop;
+                if (!VirtualProtect(reinterpret_cast<void*>(cursor), protectedEnd - cursor, applied, &previous)) fail("protect guest memory");
+                cursor = protectedEnd;
             }
         }
         return created;
@@ -130,10 +133,53 @@ public:
         }
     }
 
+    void MapFile(void* address, std::size_t bytes, HANDLE section, std::uint64_t offset, DWORD protection, DWORD maximumProtection, bool copyOnWrite) {
+        const auto start = reinterpret_cast<std::uintptr_t>(address);
+        if (!section || bytes == 0 || start % pageBytes != 0 || bytes % pageBytes != 0 || offset % pageBytes != 0 ||
+            bytes > std::numeric_limits<std::uintptr_t>::max() - start || bytes > std::numeric_limits<std::uint64_t>::max() - offset)
+            throw std::invalid_argument("invalid guest file mapping range");
+        std::lock_guard lock(mutex);
+        HANDLE duplicate = nullptr;
+        if (!DuplicateHandle(GetCurrentProcess(), section, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) fail("keep guest file section");
+        std::shared_ptr<Section> owned;
+        try { owned = std::make_shared<Section>(duplicate); }
+        catch (...) { CloseHandle(duplicate); throw; }
+        std::map<std::uintptr_t, View> staged;
+        for (std::size_t done = 0; done < bytes; done += pageBytes) {
+            auto page = std::make_shared<SharedPage>();
+            page->aliases.push_back(start + done);
+            View view{page, protection, 0, false, owned, offset + done, 0, true, copyOnWrite, maximumProtection};
+            view.protection = normalize(view, protection);
+            staged.emplace(start + done, std::move(view));
+        }
+        const auto& first = staged.begin()->second;
+        const DWORD mappedProtection = normalize(first, maximumProtection);
+        if (mappedProtection == PAGE_NOACCESS)
+            throw std::system_error(EACCES, std::generic_category(), "guest file section is inaccessible");
+        reset(start, bytes);
+        try {
+            for (const auto& [base, view] : staged) {
+                split(base, pageBytes);
+                auto* page = reinterpret_cast<void*>(base);
+                if (!map(owned->handle, GetCurrentProcess(), page, view.offset, pageBytes, MEM_REPLACE_PLACEHOLDER, mappedProtection, nullptr, 0)) fail("map guest file page");
+                if (view.protection != mappedProtection) {
+                    DWORD previous;
+                    if (!VirtualProtect(page, pageBytes, view.protection, &previous)) fail("protect guest file page");
+                }
+            }
+        } catch (...) {
+            reset(start, bytes);
+            throw;
+        }
+        views.merge(staged);
+    }
+
     void SetProtection(std::uintptr_t address, std::size_t bytes, DWORD protection) {
         std::lock_guard lock(mutex);
+        for (auto it = views.lower_bound(address); it != views.end() && it->first < address + bytes; ++it)
+            normalize(it->second, protection);
         for (auto it = views.lower_bound(address); it != views.end() && it->first < address + bytes; ++it) {
-            it->second.protection = protection;
+            it->second.protection = normalize(it->second, protection);
             it->second.armed = false;
             invalidate(*it->second.page);
         }
@@ -221,6 +267,8 @@ public:
         GetSystemInfo(&system);
         for (std::size_t done = 0; done < bytes; done += pageBytes, ++view) {
             if (view == views.end() || view->first != address + done || view->second.offset != offset + done) throw refuse("the range is not one contiguous run of views of a section");
+            if (view->second.copyOnWrite) throw refuse("private file pages cannot expose a shared backing alias");
+            if (view->second.file && (access(view->second.maximumProtection) & 2) == 0) throw refuse("the file mapping does not permit shared writes");
             if (view->second.section != section && !sameSection(view->second.section->handle, section->handle)) throw refuse("the range spans several sections");
         }
         const auto lead = offset % system.dwAllocationGranularity;
@@ -254,6 +302,8 @@ public:
         const auto capacity = *count;
         *count = 0;
         const auto end = address + bytes;
+        for (auto it = views.lower_bound(address & ~(pageBytes - 1)); it != views.end() && it->first < end; ++it)
+            if (it->second.file) return false;
         if (clear && !collectable(address, end)) return false;
         for (auto cursor = address; cursor < end;) {
             const auto nextClean = cleanRanges.upper_bound(cursor);
@@ -345,6 +395,9 @@ private:
         std::shared_ptr<Section> section;
         std::uint64_t offset;
         std::uint32_t hostWrites;
+        bool file = false;
+        bool copyOnWrite = false;
+        DWORD maximumProtection = PAGE_EXECUTE_READWRITE;
     };
     void forgetClean(std::uintptr_t start, std::uintptr_t end) {
         auto it = cleanRanges.lower_bound(start);
@@ -379,7 +432,27 @@ private:
     }
 
     static bool writable(DWORD protection) {
-        return protection == PAGE_READWRITE || protection == PAGE_EXECUTE_READWRITE;
+        return protection == PAGE_READWRITE || protection == PAGE_EXECUTE_READWRITE || protection == PAGE_WRITECOPY || protection == PAGE_EXECUTE_WRITECOPY;
+    }
+    static unsigned access(DWORD protection) {
+        switch (protection) {
+            case PAGE_NOACCESS: return 0;
+            case PAGE_READONLY: return 1;
+            case PAGE_READWRITE: case PAGE_WRITECOPY: return 3;
+            case PAGE_EXECUTE: return 4;
+            case PAGE_EXECUTE_READ: return 5;
+            case PAGE_EXECUTE_READWRITE: case PAGE_EXECUTE_WRITECOPY: return 7;
+            default: throw std::invalid_argument("unsupported guest file protection");
+        }
+    }
+    static DWORD normalize(const View& view, DWORD protection) {
+        if (!view.file) return protection;
+        if ((access(protection) & ~access(view.maximumProtection)) != 0)
+            throw std::system_error(EACCES, std::generic_category(), "file mapping protection exceeds descriptor access");
+        if (!view.copyOnWrite) return protection;
+        if (protection == PAGE_READWRITE) return PAGE_WRITECOPY;
+        if (protection == PAGE_EXECUTE_READWRITE) return PAGE_EXECUTE_WRITECOPY;
+        return protection;
     }
     using AllocateFunction = PVOID (WINAPI*)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER*, ULONG);
     using MapFunction = PVOID (WINAPI*)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER*, ULONG);

@@ -1,5 +1,7 @@
 #include <atomic>
+#include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <list>
@@ -11,6 +13,7 @@
 
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/GuestProcess.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
 #include "prx/libkernel/Time/include/TimedWait.hpp"
@@ -28,8 +31,13 @@ constexpr int UMTX_OP_WAIT_UINT = 11;
 constexpr int UMTX_OP_WAIT_UINT_PRIVATE = 15;
 constexpr int UMTX_OP_WAKE_PRIVATE = 16;
 constexpr int UMTX_OP_NWAKE_PRIVATE = 21;
+constexpr int UMTX_OP_SEM2_WAIT = 23;
+constexpr int UMTX_OP_SEM2_WAKE = 24;
 constexpr int UMTX_OP_MAX = 27;
 constexpr std::uint32_t UMTX_ABSTIME = 1;
+constexpr std::uint32_t USEM_HAS_WAITERS = 0x80000000u;
+constexpr std::uint32_t USEM_MAX_COUNT = 0x7fffffffu;
+constexpr std::uint32_t USYNC_PROCESS_SHARED = 1;
 constexpr int GUEST_CLOCK_REALTIME = 0;
 
 constexpr int GUEST_EFAULT = 14;
@@ -50,6 +58,53 @@ struct AddressWaiter {
     TimedWait::Condition condition;
     bool woken = false;
 };
+
+struct Usem2 {
+    std::uint32_t count;
+    std::uint32_t flags;
+};
+static_assert(sizeof(Usem2) == 8 && offsetof(Usem2, flags) == 4);
+
+struct SemaphoreState {
+    std::mutex mutex;
+    std::unordered_map<std::uintptr_t, std::list<AddressWaiter*>> queues;
+    bool prepared = false;
+};
+
+SemaphoreState& Semaphores() {
+    static auto* state = new SemaphoreState();
+    return *state;
+}
+
+bool PrepareSemaphores(void*) {
+    auto& state = Semaphores();
+    state.prepared = state.mutex.try_lock();
+    if (!state.prepared || !state.queues.empty()) {
+        errno = 35;
+        return false;
+    }
+    return true;
+}
+
+bool ReleaseSemaphores(void*) noexcept {
+    auto& state = Semaphores();
+    if (state.prepared) {
+        state.prepared = false;
+        state.mutex.unlock();
+    }
+    return true;
+}
+
+bool ParentSemaphores(void* context, bool) noexcept { return ReleaseSemaphores(context); }
+
+struct SemaphoreForkRegistration {
+    SemaphoreForkRegistration() {
+        Semaphores();
+        const GuestForkHooks hooks{560, PrepareSemaphores, ParentSemaphores, ReleaseSemaphores, nullptr};
+        if (GuestRegisterForkHooks_nid_no_patch(&hooks) != 0)
+            throw std::runtime_error("libkernel: registering semaphore fork hooks failed");
+    }
+} semaphoreForkRegistration;
 
 std::mutex g_waitersLock;
 std::unordered_map<std::uintptr_t, std::list<AddressWaiter*>> g_waiters;
@@ -199,6 +254,78 @@ int UmtxNwakePrivate(void* object, std::uint64_t value) {
     return 0;
 }
 
+Usem2* PrivateSemaphore(void* object) {
+    if (object == nullptr) return nullptr;
+    if (!IsAlignedAddress<Usem2>(reinterpret_cast<std::uintptr_t>(object))) APS5_INVALID_ARG_EX;
+    auto* semaphore = static_cast<Usem2*>(object);
+    if ((semaphore->flags & USYNC_PROCESS_SHARED) != 0)
+        NotImplemented_nid_no_patch("_umtx_op SEM2 process-shared semaphore");
+    return semaphore;
+}
+
+int UmtxSem2Wait(void* object, const void* sizeArgument, const void* timeArgument, const void* caller) {
+    std::optional<std::uint64_t> deadline;
+    if (const int error = UmtxDeadline(sizeArgument, timeArgument, deadline); error != 0) return error;
+    auto* semaphore = PrivateSemaphore(object);
+    if (semaphore == nullptr) return GUEST_EFAULT;
+    auto& state = Semaphores();
+    std::unique_lock lock(state.mutex);
+    std::atomic_ref count(semaphore->count);
+    auto value = count.load();
+    for (;;) {
+        if ((value & USEM_MAX_COUNT) != 0) return 0;
+        if (value == USEM_HAS_WAITERS || count.compare_exchange_strong(value, USEM_HAS_WAITERS)) break;
+    }
+    const auto key = reinterpret_cast<std::uintptr_t>(object);
+    AddressWaiter waiter;
+    auto& queue = state.queues[key];
+    const auto position = [&] {
+        try { return queue.insert(queue.end(), &waiter); }
+        catch (...) {
+            if (queue.empty()) state.queues.erase(key);
+            throw;
+        }
+    }();
+    const auto remove = [&] {
+        if (waiter.woken) return;
+        queue.erase(position);
+        if (queue.empty()) state.queues.erase(key);
+    };
+    const auto started = std::chrono::steady_clock::now();
+    try {
+        const auto woken = [&] { return waiter.woken; };
+        if (deadline) waiter.condition.WaitUntil(lock, *deadline, woken);
+        else waiter.condition.Wait(lock, woken);
+    } catch (...) {
+        if (!lock.owns_lock()) lock.lock();
+        remove();
+        throw;
+    }
+    remove();
+    const bool woken = waiter.woken;
+    lock.unlock();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started);
+    KernelTraceWait_nid_postfix("usem", caller, static_cast<std::uint64_t>(elapsed.count()), !woken);
+    return woken ? 0 : GUEST_ETIMEDOUT;
+}
+
+int UmtxSem2Wake(void* object) {
+    auto* semaphore = PrivateSemaphore(object);
+    if (semaphore == nullptr) return GUEST_EFAULT;
+    auto& state = Semaphores();
+    std::lock_guard lock(state.mutex);
+    const auto entry = state.queues.find(reinterpret_cast<std::uintptr_t>(object));
+    if (entry == state.queues.end()) return 0;
+    auto& queue = entry->second;
+    if (queue.size() == 1) std::atomic_ref(semaphore->count).fetch_and(USEM_MAX_COUNT);
+    auto* waiter = queue.front();
+    queue.pop_front();
+    waiter->woken = true;
+    waiter->condition.NotifyOne();
+    if (queue.empty()) state.queues.erase(entry);
+    return 0;
+}
+
 }  // namespace
 
 extern "C" {
@@ -270,6 +397,12 @@ int APS5_VABI _umtx_op_nid_postfix(void* object, int operation, std::uint64_t va
             break;
         case UMTX_OP_NWAKE_PRIVATE:
             error = UmtxNwakePrivate(object, value);
+            break;
+        case UMTX_OP_SEM2_WAIT:
+            error = UmtxSem2Wait(object, sizeArgument, timeArgument, caller);
+            break;
+        case UMTX_OP_SEM2_WAKE:
+            error = UmtxSem2Wake(object);
             break;
         default:
             if (operation < 0 || operation >= UMTX_OP_MAX) {

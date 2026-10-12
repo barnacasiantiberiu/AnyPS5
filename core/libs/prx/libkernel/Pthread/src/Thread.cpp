@@ -274,7 +274,7 @@ struct ThreadForkRegistration {
 
 PthreadPrivate::PthreadPrivate(const PthreadAttrPrivate* attr) : _finished(false), _retval(nullptr), _detached(false), _adopted(false) {
     auto& registry = CpuClocks();
-    std::lock_guard lock(registry.lock);
+    std::unique_lock lock(registry.lock);
     const auto* parent = CurrentGuestState().current;
     const KernelCpumask inherited = parent ? parent->affinity.load(std::memory_order_relaxed) : registry.processAffinity;
     affinity.store(attr && attr->_affinityExplicit ? attr->_affinity : inherited, std::memory_order_relaxed);
@@ -282,9 +282,17 @@ PthreadPrivate::PthreadPrivate(const PthreadAttrPrivate* attr) : _finished(false
         throw std::runtime_error("Guest thread CPU clock identifiers are exhausted");
     cpuClockThread = registry.nextThread++;
     registry.threads.emplace(cpuClockThread, this);
+    lock.unlock();
+    try { GuestSignalThreadCreate_nid_no_patch(this, const_cast<PthreadPrivate*>(parent)); }
+    catch (...) {
+        lock.lock();
+        registry.threads.erase(cpuClockThread);
+        throw;
+    }
 }
 
 PthreadPrivate::~PthreadPrivate() {
+    GuestSignalThreadExit_nid_no_patch(this);
     auto& registry = CpuClocks();
     std::lock_guard lock(registry.lock);
     registry.threads.erase(cpuClockThread);
@@ -433,6 +441,7 @@ static void finishThread(PthreadPrivate* self, void* retval) {
     if (const auto callback = threadDtors.load())
         callback();
     ThreadLifecycle::RunKeyDtors();
+    GuestSignalThreadExit_nid_no_patch(self);
     {
         std::unique_lock<std::mutex> lk(self->_join_mtx);
         self->_retval = retval;
@@ -476,6 +485,7 @@ static void RunThread(std::unique_ptr<ThreadArgs> args) {
     TimedWait::BindThreadWaitState(&self->waitCount);
     CurrentGuestState().current = self;
     RegisterStack(self);
+    GuestSignalThreadBind_nid_no_patch(self);
 #ifndef _WIN32
     const sigset_t signalMask = args->signalMask;
 #endif
@@ -792,6 +802,7 @@ Pthread APS5_VABI scePthreadSelf() {
         CurrentGuestState().current = adoptedThread.get();
     }
 #endif
+    GuestSignalThreadBind_nid_no_patch(CurrentGuestState().current);
     return CurrentGuestState().current;
 }
 

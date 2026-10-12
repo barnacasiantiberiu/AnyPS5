@@ -12,5 +12,10 @@ public:
 };
 
 extern "C" void APS5_VABI scePthreadExit(void* retval);
+extern "C" void GuestSignalThreadCreate_nid_no_patch(Pthread thread, Pthread parent);
+extern "C" void GuestSignalThreadBind_nid_no_patch(Pthread thread);
+extern "C" void GuestSignalThreadExit_nid_no_patch(Pthread thread);
+extern "C" bool GuestDeliverSignal_nid_no_patch(Pthread thread, void (APS5_VABI *callback)(int, void*), int signal);
+extern "C" void GuestCaptureFatalSignal_nid_no_patch(int signal, const void* context) noexcept;
 
 #endif

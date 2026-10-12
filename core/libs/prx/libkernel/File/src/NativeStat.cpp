@@ -1,4 +1,5 @@
 #include "prx/libkernel/File/include/NativeStat.hpp"
+#include "prx/libkernel/File/include/SharedMemory.hpp"
 #include "prx/libkernel/File/include/DirectoryDescriptor.hpp"
 #include "prx/libc/include/General.hpp"
 
@@ -134,6 +135,9 @@ void FillFileStat(const std::filesystem::path& nativePath, FileStat* sb) {
 }
 
 void FillFileStat(int nativeDescriptor, FileStat* sb) {
+    const int shared = SharedMemoryStatus_nid_no_patch(nativeDescriptor, sb);
+    if (shared == 0) return;
+    if (shared == -1) throw std::runtime_error("FillFileStat: shared-memory status failed");
     NativeStat st{};
     if (DoFstat(nativeDescriptor, &st) != 0) {
         throw std::runtime_error(std::string("FillFileStat: fstat failed for fd ") + std::to_string(nativeDescriptor));
@@ -142,6 +146,8 @@ void FillFileStat(int nativeDescriptor, FileStat* sb) {
 }
 
 bool FillFileStatFromDescriptor(int fd, FileStat* sb) {
+    const int shared = SharedMemoryStatus_nid_no_patch(fd, sb);
+    if (shared != -2) return shared == 0;
     NativeStat st{};
     if (DoFstat(fd, &st) != 0) return false;
     CopyNativeStat(st, sb);

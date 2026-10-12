@@ -24,8 +24,13 @@ static constexpr int16_t EVFILT_HRTIMER = -15;
 static constexpr int16_t EVFILT_AMPR = -25;
 
 static constexpr uint16_t EV_ADD = 0x0001;
+static constexpr uint16_t EV_DELETE = 0x0002;
+static constexpr uint16_t EV_ENABLE = 0x0004;
+static constexpr uint16_t EV_DISABLE = 0x0008;
 static constexpr uint16_t EV_ONESHOT = 0x0010;
 static constexpr uint16_t EV_CLEAR = 0x0020;
+static constexpr uint16_t EV_RECEIPT = 0x0040;
+static constexpr uint16_t EV_DISPATCH = 0x0080;
 static constexpr uint16_t EV_ERROR = 0x4000;
 static constexpr uint16_t EV_EOF = 0x8000;
 
@@ -45,10 +50,12 @@ struct KernelFilter {
     EqueueResetFunc resetFunc = nullptr;
     EqueueDeleteFunc deleteEventFunc = nullptr;
     EqueuePollFunc pollFunc = nullptr;
+    bool timedPolling = false;
 };
 
 struct KernelEqueueEvent {
     bool triggered = false;
+    bool enabled = true;
     uint64_t deadlineNs = 0;
     uint64_t intervalNs = 0;
     KernelEvent event;
@@ -68,10 +75,13 @@ public:
     void SetName(std::string name) { m_name = std::move(name); }
 
     int AddEvent(const KernelEqueueEvent& event);
+    int ChangeEvent(const KernelEvent& change);
     int TriggerEvent(uintptr_t ident, int16_t filter, void* triggerData);
     int DeleteEvent(uintptr_t ident, int16_t filter);
     int GetTriggeredEvents(KernelEvent* ev, int num);
+    int PollReadiness();
     int WaitForEvents(KernelEvent* ev, int num, uint32_t micros);
+    int WaitUntil(KernelEvent* ev, int num, std::uint64_t deadline);
     void RemoveDescriptorEvents(uintptr_t ident);
     void Close();
     static uint64_t MonotonicNs();

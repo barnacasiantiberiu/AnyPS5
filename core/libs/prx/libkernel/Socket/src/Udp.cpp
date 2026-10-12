@@ -19,6 +19,7 @@
 #include "prx/libkernel/Socket/include/SocketRuntime.hpp"
 #include "prx/libkernel/File/include/DescriptorControl.hpp"
 #include "prx/libkernel/Equeue/Equeue.hpp"
+#include "prx/libkernel/Equeue/DescriptorEvents.hpp"
 #include "prx/libkernel/Time/include/TimedWait.hpp"
 #include "prx/libkernel/Socket/include/SocketPoll.hpp"
 #include <algorithm>
@@ -312,12 +313,18 @@ int GuestSockets::Duplicate(int descriptor) {
 
 int GuestSockets::DuplicateTo(int descriptor, int target) {
     try {
+        std::shared_ptr<Socket> source;
+        {
+            std::lock_guard lock(socketsMutex);
+            const auto found = sockets.find(descriptor);
+            if (found == sockets.end()) return Fail(9);
+            if (target == descriptor) return target;
+            if (target == INT_MAX) return Fail(9);
+            source = found->second;
+        }
+        EqueueDescriptorClosed(target);
         std::lock_guard lock(socketsMutex);
-        const auto found = sockets.find(descriptor);
-        if (found == sockets.end()) return Fail(9);
-        if (target == descriptor) return target;
-        if (target == INT_MAX) return Fail(9);
-        sockets.insert_or_assign(target, found->second);
+        sockets.insert_or_assign(target, std::move(source));
         if (target >= nextDescriptor) nextDescriptor = target + 1;
         return target;
     } catch (const std::bad_alloc&) {
@@ -408,6 +415,14 @@ int UnnamedAddress(void* address, std::uint32_t* length) {
     std::memcpy(address, bytes, *length);
     return 0;
 }
+}
+
+bool GuestSockets::ReadWatermarkSupported_nid_no_patch(int descriptor) {
+    const auto socket = Find(descriptor);
+    if (!socket || socket->type != 1) return false;
+    sockaddr_storage peer{};
+    socklen_t length = sizeof(peer);
+    return ::getpeername(socket->value, reinterpret_cast<sockaddr*>(&peer), &length) == 0;
 }
 
 bool GuestSockets::Ready(int descriptor, bool write, std::int64_t* data, bool* eof) {
@@ -939,6 +954,7 @@ int APS5_VABI poll_nid_postfix(GuestPollDescriptor* descriptors, std::uint32_t c
     std::vector<std::shared_ptr<Socket>> held;
     std::vector<NativePollDescriptor> native;
     std::vector<std::uint32_t> owners;
+    std::vector<std::uint32_t> queues;
     int ready = 0;
     for (std::uint32_t i = 0; i < count; ++i) {
         auto& entry = descriptors[i];
@@ -946,6 +962,10 @@ int APS5_VABI poll_nid_postfix(GuestPollDescriptor* descriptors, std::uint32_t c
         if (entry.descriptor < 0) continue;
         if ((entry.events & ~GuestPollAccepted) != 0)
             throw std::runtime_error("poll: unsupported event flags " + std::to_string(entry.events));
+        if (IsKqueueDescriptor_nid_no_patch(entry.descriptor)) {
+            queues.push_back(i);
+            continue;
+        }
         if (entry.descriptor < GuestSockets::FirstDescriptor)
             throw std::runtime_error("poll: descriptor " + std::to_string(entry.descriptor) + " is not a socket");
         auto socket = Find(entry.descriptor);
@@ -965,29 +985,50 @@ int APS5_VABI poll_nid_postfix(GuestPollDescriptor* descriptors, std::uint32_t c
         owners.push_back(i);
         held.push_back(std::move(socket));
     }
-    if (native.empty()) {
+    if (native.empty() && queues.empty()) {
         if (ready || timeout == 0) return ready;
         if (timeout < 0) throw std::runtime_error("poll: an infinite wait without sockets never returns");
         std::this_thread::sleep_for(std::chrono::milliseconds(timeout));
         return 0;
     }
-    const int wait = ready ? 0 : timeout;
+    const int invalid = ready;
+    const auto deadline = timeout < 0 ? std::chrono::steady_clock::time_point::max()
+        : std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout);
+    for (;;) {
+        ready = invalid;
+        for (const auto index : queues) {
+            auto& entry = descriptors[index];
+            const int result = PollKqueueDescriptor_nid_no_patch(entry.descriptor, entry.events);
+            entry.revents = result < 0 ? GuestPollInvalid : static_cast<short>(result);
+            if (entry.revents) ++ready;
+        }
+        const auto remaining = timeout < 0 ? -1 : std::max<std::int64_t>(0,
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
+        const int wait = ready ? 0 : !queues.empty() ? static_cast<int>(remaining < 0 ? 1 : std::min<std::int64_t>(remaining, 1)) : timeout;
+        for (auto& entry : native) entry.revents = 0;
+        int result = 0;
+        if (native.empty()) {
+            if (wait > 0) std::this_thread::sleep_for(std::chrono::milliseconds(wait));
+        } else {
 #ifdef _WIN32
-    const int result = WSAPoll(native.data(), static_cast<ULONG>(native.size()), wait);
+            result = WSAPoll(native.data(), static_cast<ULONG>(native.size()), wait);
 #else
-    const int result = ::poll(native.data(), static_cast<nfds_t>(native.size()), wait);
+            result = ::poll(native.data(), static_cast<nfds_t>(native.size()), wait);
 #endif
-    if (result < 0) return Fail(NativeError());
-    for (std::size_t i = 0; i < native.size(); ++i) {
-        auto& entry = descriptors[owners[i]];
-        for (const auto& flag : RequestFlags)
-            if ((entry.events & flag.guest) && (native[i].revents & flag.native))
-                entry.revents = static_cast<short>(entry.revents | flag.guest);
-        for (const auto& flag : StatusFlags)
-            if (native[i].revents & flag.native) entry.revents = static_cast<short>(entry.revents | flag.guest);
-        if (entry.revents) ++ready;
+        }
+        if (result < 0) return Fail(NativeError());
+        for (std::size_t i = 0; i < native.size(); ++i) {
+            auto& entry = descriptors[owners[i]];
+            entry.revents = 0;
+            for (const auto& flag : RequestFlags)
+                if ((entry.events & flag.guest) && (native[i].revents & flag.native))
+                    entry.revents = static_cast<short>(entry.revents | flag.guest);
+            for (const auto& flag : StatusFlags)
+                if (native[i].revents & flag.native) entry.revents = static_cast<short>(entry.revents | flag.guest);
+            if (entry.revents) ++ready;
+        }
+        if (ready || queues.empty() || std::chrono::steady_clock::now() >= deadline) return ready;
     }
-    return ready;
 }
 }
 

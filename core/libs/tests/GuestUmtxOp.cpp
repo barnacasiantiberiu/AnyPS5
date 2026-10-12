@@ -21,7 +21,7 @@ static constexpr int UMTX_OP_WAIT_UINT = 11;
 static constexpr int UMTX_OP_WAIT_UINT_PRIVATE = 15;
 static constexpr int UMTX_OP_WAKE_PRIVATE = 16;
 static constexpr int UMTX_OP_NWAKE_PRIVATE = 21;
-static constexpr int UMTX_OP_SEM2_WAIT = 23;
+static constexpr int UMTX_OP_SEM_WAIT = 19;
 static constexpr int UMTX_OP_MAX = 27;
 static constexpr std::uint32_t UMTX_ABSTIME = 1;
 static constexpr int CLOCK_MONOTONIC_ID = 4;
@@ -289,7 +289,7 @@ static void RejectsBadObjectsAndOperations() {
     catch (const std::runtime_error&) { threw = true; }
     Require(threw);
     threw = false;
-    try { Umtx(&value, UMTX_OP_SEM2_WAIT, 0); }
+    try { Umtx(&value, UMTX_OP_SEM_WAIT, 0); }
     catch (const std::runtime_error&) { threw = true; }
     Require(threw);
 }

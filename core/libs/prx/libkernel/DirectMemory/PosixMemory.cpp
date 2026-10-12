@@ -3,6 +3,8 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/File/include/SharedMemory.hpp"
+#include "prx/libkernel/File/include/File.hpp"
+#include "prx/libc/include/HostDescriptorFork.hpp"
 #include <limits>
 #include <cerrno>
 #include <new>
@@ -11,6 +13,9 @@
 #if defined(__linux__)
 #include <fcntl.h>
 #include <unistd.h>
+#elif defined(_WIN32)
+#include <io.h>
+#include <windows.h>
 #endif
 
 extern "C" int* APS5_VABI __error_nid_postfix();
@@ -40,22 +45,47 @@ constexpr std::uintptr_t GuestUserAddressEnd = 0x800000000000;
 constexpr int GuestAlignedSuper = 0x1000000;
 constexpr std::size_t SuperpageSize = std::size_t{1} << 21;
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(_WIN32)
 class ScopedDescriptor {
 public:
+#ifdef _WIN32
+    explicit ScopedDescriptor(int value) noexcept {
+        try {
+            const HostDescriptorOperation operation;
+            if (!DescriptorIsOpen_nid_no_patch(value)) { error = EBADF; return; }
+            if (!File::QuerySharedMemoryAccess_nid_no_patch(value, &readable, &writable)) { error = GuestNotSupported; return; }
+            HANDLE duplicate = nullptr;
+            if (!DuplicateHandle(GetCurrentProcess(), reinterpret_cast<HANDLE>(::_get_osfhandle(value)),
+                GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) { error = GuestNoMemory; return; }
+            descriptor = reinterpret_cast<std::intptr_t>(duplicate);
+        } catch (const std::bad_alloc&) { error = GuestNoMemory; }
+        catch (...) { error = GuestIoError; }
+    }
+    bool Readable() const noexcept { return readable; }
+    bool Writable() const noexcept { return writable; }
+#else
     explicit ScopedDescriptor(int value) noexcept : descriptor(fcntl(value, F_DUPFD_CLOEXEC, 0)), error(descriptor < 0 ? errno : 0) {}
+#endif
     ~ScopedDescriptor() {
         const int savedError = errno;
+#ifdef _WIN32
+        if (descriptor != -1) CloseHandle(reinterpret_cast<HANDLE>(descriptor));
+#else
         if (descriptor >= 0) close(descriptor);
+#endif
         errno = savedError;
     }
     ScopedDescriptor(const ScopedDescriptor&) = delete;
     ScopedDescriptor& operator=(const ScopedDescriptor&) = delete;
-    int Get() const noexcept { return descriptor; }
+    std::intptr_t Get() const noexcept { return descriptor; }
     int Error() const noexcept { return error; }
 private:
-    int descriptor = -1;
+    std::intptr_t descriptor = -1;
     int error = 0;
+#ifdef _WIN32
+    bool readable = false;
+    bool writable = false;
+#endif
 };
 #endif
 
@@ -123,6 +153,12 @@ void* APS5_VABI mmap_nid_postfix(void* address, std::size_t length, int protecti
     if ((protection & 1) != 0 && accessMode == O_WRONLY) return failed(GuestAccess);
     if (kind == GuestShared && (protection & 2) != 0 && accessMode == O_RDONLY) return failed(GuestAccess);
     if (!File::IsSharedMemoryDescriptor_nid_no_patch(mappingDescriptor)) return failed(GuestNotSupported);
+#elif defined(_WIN32)
+    const ScopedDescriptor pinnedDescriptor(descriptor);
+    if (pinnedDescriptor.Get() < 0) return failed(pinnedDescriptor.Error());
+    const auto mappingDescriptor = pinnedDescriptor.Get();
+    if (!pinnedDescriptor.Readable() || (kind == GuestShared && (protection & 2) != 0 && !pinnedDescriptor.Writable()))
+        return failed(GuestAccess);
 #else
     const int mappingDescriptor = descriptor;
     if (!File::IsSharedMemoryDescriptor_nid_no_patch(mappingDescriptor)) return failed(GuestNotSupported);
@@ -138,6 +174,16 @@ void* APS5_VABI mmap_nid_postfix(void* address, std::size_t length, int protecti
         return failed(GuestInvalid);
     } catch (const std::system_error& error) {
         const int hostError = error.code().value();
+#ifdef _WIN32
+        if (error.code().category() == std::system_category()) {
+            if (hostError == ERROR_ACCESS_DENIED) return failed(GuestAccess);
+            if (hostError == ERROR_INVALID_HANDLE) return failed(GuestBadDescriptor);
+            if (hostError == ERROR_INVALID_PARAMETER || hostError == ERROR_MAPPED_ALIGNMENT) return failed(GuestInvalid);
+            if (hostError == ERROR_NOT_ENOUGH_MEMORY || hostError == ERROR_OUTOFMEMORY || hostError == ERROR_COMMITMENT_LIMIT)
+                return failed(GuestNoMemory);
+            return failed(GuestIoError);
+        }
+#endif
         if (hostError == ENOTSUP || hostError == EOPNOTSUPP) return failed(GuestNotSupported);
         if (hostError == EACCES || hostError == EPERM) return failed(GuestAccess);
         if (hostError == EBADF) return failed(GuestBadDescriptor);

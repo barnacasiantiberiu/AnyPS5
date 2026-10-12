@@ -1,4 +1,5 @@
 #include "prx/libkernel/File/include/FileFlags.hpp"
+#include "prx/libkernel/Equeue/DescriptorEvents.hpp"
 #include "prx/libkernel/File/include/NativeStat.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/HostDescriptorFork.hpp"
@@ -47,20 +48,22 @@ static std::int64_t NativeLseek(int fd, std::int64_t offset, int whence) {
     const auto result = File::SeekSharedMemory_nid_no_patch(fd, offset, whence);
     return result == -2 ? ::_lseeki64(fd, offset, whence) : result;
 }
-static int NativeRead(int fd, void* buf, std::size_t n) {
+static std::int64_t NativeRead(int fd, void* buf, std::size_t n) {
     if (n > static_cast<std::size_t>(std::numeric_limits<unsigned int>::max())) {
         throw std::runtime_error("sceKernelRead: nbytes exceeds platform limit");
     }
+    const auto shared = File::ReadSharedMemory_nid_no_patch(fd, buf, n);
+    if (shared != -2) return shared;
     const int result = ::_read(fd, buf, static_cast<unsigned int>(n));
     if (result < 0 && _doserrno == ERROR_NO_DATA) errno = EAGAIN;
     return result;
 }
-static int NativeWrite(int fd, const void* buf, std::size_t n) {
+static std::int64_t NativeWrite(int fd, const void* buf, std::size_t n) {
     if (n > static_cast<std::size_t>(std::numeric_limits<unsigned int>::max())) {
         throw std::runtime_error("sceKernelWrite: nbytes exceeds platform limit");
     }
     const auto shared = File::WriteSharedMemory_nid_no_patch(fd, buf, n);
-    if (shared != -2) return static_cast<int>(shared);
+    if (shared != -2) return shared;
     const int result = ::_write(fd, buf, static_cast<unsigned int>(n));
     if (result < 0 && errno == ENOSPC && _doserrno == 0 && ::GetFileType(reinterpret_cast<HANDLE>(::_get_osfhandle(fd))) == FILE_TYPE_PIPE) errno = EAGAIN;
     return result;
@@ -251,6 +254,7 @@ int APS5_VABI sceKernelClose(int d) {
 }
 
 std::int64_t APS5_VABI sceKernelRead(int d, void* buf, std::size_t nbytes) {
+    if (IsKqueueDescriptor_nid_no_patch(d)) return SCE_KERNEL_ERROR_ENXIO;
     if (d >= GuestSockets::FirstDescriptor) {
         const auto n = GuestSockets::Read(d, buf, nbytes);
         return n < 0 ? SceKernelError(*__error_nid_postfix()) : n;
@@ -267,6 +271,7 @@ std::int64_t APS5_VABI sceKernelRead(int d, void* buf, std::size_t nbytes) {
 }
 
 std::int64_t APS5_VABI sceKernelWrite(int d, const void* buf, std::size_t nbytes) {
+    if (IsKqueueDescriptor_nid_no_patch(d)) return SCE_KERNEL_ERROR_ENXIO;
     if (d >= GuestSockets::FirstDescriptor) {
         const auto n = GuestSockets::Write(d, buf, nbytes);
         return n < 0 ? SceKernelError(*__error_nid_postfix()) : n;
@@ -280,6 +285,7 @@ std::int64_t APS5_VABI sceKernelWrite(int d, const void* buf, std::size_t nbytes
 }
 
 std::int64_t APS5_VABI sceKernelLseek(int d, std::int64_t offset, int whence) {
+    if (IsKqueueDescriptor_nid_no_patch(d)) return SceKernelError(29);
     if (whence < 0 || whence > 2) {
         throw std::invalid_argument(std::string(__func__) + ": invalid whence=" + std::to_string(whence));
     }

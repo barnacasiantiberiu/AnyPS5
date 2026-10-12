@@ -2,6 +2,7 @@ add_library(libkernel SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/Unimplemented.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Apr/src/Apr.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Equeue/Equeue.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Equeue/DescriptorEvents.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Equeue/src/EventAccessors.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/File/src/DescriptorControl.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/File/src/DirectoryDescriptor.cpp
@@ -52,6 +53,7 @@ add_library(libkernel SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Exception.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Sanitizer.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Rtld.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Tls.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Process.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Sandbox.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/SystemConfiguration.cpp
@@ -78,6 +80,43 @@ endif()
 configure_windows_unwind(libkernel)
 
 if(BUILD_TESTING)
+    foreach(kernelCase IN ITEMS kqueue:GuestKqueue equeue_descriptors:GuestEqueueDescriptors coredump:GuestCoredump module_segment:GuestModuleSegment)
+        string(REPLACE ":" ";" kernelCase ${kernelCase})
+        list(GET kernelCase 0 kernelCaseName)
+        list(GET kernelCase 1 kernelCaseSource)
+        add_test_executable(guest_${kernelCaseName}_tests ${LIBS_INCLUDE_DIR}/tests/${kernelCaseSource}.cpp)
+        target_include_directories(guest_${kernelCaseName}_tests PRIVATE ${LIBS_INCLUDE_DIR})
+        target_link_libraries(guest_${kernelCaseName}_tests PRIVATE libkernel libc)
+        configure_windows_unwind(guest_${kernelCaseName}_tests)
+        if(kernelCaseName STREQUAL "coredump")
+            add_test(NAME guest_coredump_capture COMMAND guest_coredump_tests capture)
+            add_test(NAME guest_coredump_failure COMMAND guest_coredump_tests failure)
+            add_test(NAME guest_coredump_fatal COMMAND guest_coredump_tests fatal)
+            set(kernelCaseTests guest_coredump_capture guest_coredump_failure guest_coredump_fatal)
+        else()
+            add_test(NAME guest_${kernelCaseName} COMMAND guest_${kernelCaseName}_tests)
+            set(kernelCaseTests guest_${kernelCaseName})
+        endif()
+        set_tests_properties(${kernelCaseTests} PROPERTIES TIMEOUT 20 LABELS "module-functional;module:libkernel")
+        if(WIN32)
+            if(kernelCaseName STREQUAL "coredump")
+                target_compile_definitions(guest_coredump_tests PRIVATE _WIN32_WINNT=0x0602)
+            endif()
+            set_tests_properties(${kernelCaseTests} PROPERTIES ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
+        endif()
+    endforeach()
+    if(WIN32)
+        enable_language(ASM)
+        add_test_executable(guest_tls_resolver_tests ${LIBS_INCLUDE_DIR}/tests/GuestTlsResolver.cpp
+            ${LIBS_INCLUDE_DIR}/tests/GuestTlsFixture.S)
+        target_include_directories(guest_tls_resolver_tests PRIVATE ${LIBS_INCLUDE_DIR} ${LIBS_INCLUDE_DIR}/tests)
+        target_link_libraries(guest_tls_resolver_tests PRIVATE libkernel libc)
+        configure_windows_unwind(guest_tls_resolver_tests)
+        add_test(NAME guest_tls_resolver COMMAND guest_tls_resolver_tests)
+        set_tests_properties(guest_tls_resolver PROPERTIES TIMEOUT 20 LABELS "module-functional;module:libkernel"
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
+    endif()
     add_test_executable(download_data_mount_tests ${LIBS_INCLUDE_DIR}/tests/GuestDownloadDataMount.cpp)
     target_include_directories(download_data_mount_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_link_libraries(download_data_mount_tests PRIVATE libkernel libc)
@@ -615,7 +654,8 @@ if(BUILD_TESTING)
     target_link_libraries(guest_kill_tests PRIVATE libkernel libc)
     configure_windows_unwind(guest_kill_tests)
     add_test(NAME guest_kill COMMAND guest_kill_tests)
-    set_tests_properties(guest_kill PROPERTIES TIMEOUT 20)
+    set_tests_properties(guest_sigtimedwait guest_signals guest_kill PROPERTIES
+        TIMEOUT 20 LABELS "module-functional;module:libkernel")
     if(WIN32)
         set_tests_properties(guest_kill PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
@@ -713,9 +753,22 @@ if(BUILD_TESTING)
     configure_windows_unwind(guest_umtx_op_tests)
     add_test(NAME guest_umtx_op COMMAND guest_umtx_op_tests)
     set_tests_properties(guest_umtx_op PROPERTIES TIMEOUT 20)
+    add_test_executable(guest_umtx_semaphore_tests ${LIBS_INCLUDE_DIR}/tests/GuestUmtxSemaphore.cpp)
+    target_include_directories(guest_umtx_semaphore_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_umtx_semaphore_tests PRIVATE libkernel_sys libkernel libc)
+    configure_windows_unwind(guest_umtx_semaphore_tests)
+    add_test(NAME guest_umtx_semaphore COMMAND guest_umtx_semaphore_tests)
+    add_test(NAME guest_umtx_semaphore_fork COMMAND guest_umtx_semaphore_tests fork)
+    set_tests_properties(guest_umtx_semaphore guest_umtx_semaphore_fork PROPERTIES
+        TIMEOUT 20 LABELS "module-functional;module:libkernel")
     if(WIN32)
-        set_tests_properties(guest_umtx_op PROPERTIES ENVIRONMENT_MODIFICATION
+        set_tests_properties(guest_umtx_op guest_umtx_semaphore guest_umtx_semaphore_fork PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
+        add_test(NAME guest_umtx_semaphore_coarse COMMAND guest_umtx_semaphore_tests)
+        set_tests_properties(guest_umtx_semaphore_coarse PROPERTIES
+            TIMEOUT 20 LABELS "module-functional;module:libkernel"
+            ENVIRONMENT "APS5_COARSE_TIMED_WAITS=1"
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
     endif()
     add_test_executable(guest_available_cpumask_tests ${LIBS_INCLUDE_DIR}/tests/GuestAvailableCpumask.cpp)
     target_include_directories(guest_available_cpumask_tests PRIVATE ${LIBS_INCLUDE_DIR})
@@ -790,7 +843,8 @@ if(BUILD_TESTING)
     target_link_libraries(guest_waitpid_tests PRIVATE libkernel libc)
     configure_windows_unwind(guest_waitpid_tests)
     add_test(NAME guest_waitpid COMMAND guest_waitpid_tests)
-    set_tests_properties(guest_waitpid PROPERTIES TIMEOUT 20)
+    set_tests_properties(guest_waitpid guest_ioctl_getsid PROPERTIES
+        TIMEOUT 20 LABELS "module-functional;module:libkernel")
     if(WIN32)
         set_tests_properties(guest_waitpid PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
@@ -849,6 +903,23 @@ if(BUILD_TESTING)
     target_link_libraries(guest_shm_open_tests PRIVATE libkernel libc)
     configure_windows_unwind(guest_shm_open_tests)
     add_test(NAME guest_shm_open COMMAND guest_shm_open_tests)
+    set_tests_properties(guest_shm_open PROPERTIES TIMEOUT 20 LABELS "module-functional;module:libkernel")
+    if(WIN32)
+        add_test_executable(guest_shm_mapping_windows_tests ${LIBS_INCLUDE_DIR}/tests/GuestShmMappingWindows.cpp)
+        target_include_directories(guest_shm_mapping_windows_tests PRIVATE ${LIBS_INCLUDE_DIR})
+        target_link_libraries(guest_shm_mapping_windows_tests PRIVATE libkernel_sys libkernel libc)
+        configure_windows_unwind(guest_shm_mapping_windows_tests)
+        add_test(NAME guest_shm_mapping_windows COMMAND guest_shm_mapping_windows_tests)
+        add_test(NAME guest_shm_mapping_windows_fork COMMAND guest_shm_mapping_windows_tests fork)
+        add_test_executable(guest_named_shm_windows_tests ${LIBS_INCLUDE_DIR}/tests/GuestNamedShmWindows.cpp)
+        target_include_directories(guest_named_shm_windows_tests PRIVATE ${LIBS_INCLUDE_DIR})
+        target_link_libraries(guest_named_shm_windows_tests PRIVATE libkernel_sys libkernel libc)
+        configure_windows_unwind(guest_named_shm_windows_tests)
+        add_test(NAME guest_named_shm_windows COMMAND guest_named_shm_windows_tests)
+        set_tests_properties(guest_shm_mapping_windows guest_shm_mapping_windows_fork guest_named_shm_windows PROPERTIES
+            TIMEOUT 30 LABELS "module-functional;module:libkernel"
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
+    endif()
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test_executable(guest_named_shm_open_tests ${LIBS_INCLUDE_DIR}/tests/GuestNamedShmOpen.cpp)
         target_include_directories(guest_named_shm_open_tests PRIVATE ${LIBS_INCLUDE_DIR} ${LIBS_INCLUDE_DIR}/nid/include)
