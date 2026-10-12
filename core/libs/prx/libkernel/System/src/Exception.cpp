@@ -1,9 +1,11 @@
 #include <cstdint>
 #include <cstddef>
+#include <cstdio>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include "prx/libkernel/Pthread/include/Pthread.hpp"
+#include "prx/libkernel/System/include/Coredump.hpp"
 #include <array>
 #include <chrono>
 #include <atomic>
@@ -250,7 +252,7 @@ bool InWinpthread(DWORD64 rip) {
 }
 
 bool RaiseOn(Pthread thread, GuestExceptionHandler handler, int signum) {
-    if (thread == scePthreadSelf()) {
+    if (thread->threadId == std::this_thread::get_id()) {
         CONTEXT context{};
         RtlCaptureContext(&context);
         Deliver(handler, signum, context);
@@ -304,6 +306,8 @@ bool RaiseOn(Pthread thread, GuestExceptionHandler handler, int signum) {
 }
 #else
 constexpr int HostSignal = SIGUSR1;
+constexpr int HostGuestSignal = SIGUSR2;
+std::atomic<GuestExceptionHandler> guestSignalCallback{};
 constexpr std::size_t FxsaveRegisterBytes = 416;
 
 void FromHost(const mcontext_t& host, GuestMcontext& m) {
@@ -371,6 +375,16 @@ void Deliver(int, siginfo_t*, void* context) {
     ToHost(ucontext.mcontext, host);
 }
 
+void DeliverGuestSignal(int, siginfo_t*, void* context) {
+    const auto callback = guestSignalCallback.load(std::memory_order_acquire);
+    if (callback == nullptr) return;
+    auto& host = static_cast<ucontext_t*>(context)->uc_mcontext;
+    GuestUcontext ucontext{};
+    FromHost(host, ucontext.mcontext);
+    CallHandler(callback, 1, ucontext);
+    ToHost(ucontext.mcontext, host);
+}
+
 void InstallDelivery() {
     static const bool installed = [] {
         struct sigaction action{};
@@ -417,6 +431,43 @@ bool RaiseOn(Pthread thread) {
 }
 #endif
 
+}
+
+extern "C" bool GuestDeliverSignal_nid_no_patch(Pthread thread, void (APS5_VABI *callback)(int, void*), int signal) {
+#ifdef _WIN32
+    return RaiseOn(thread, callback, signal);
+#else
+    if (thread->threadId == std::this_thread::get_id()) {
+        ucontext_t host{};
+        if (getcontext(&host) != 0) throw std::system_error(errno, std::generic_category(), "Capturing guest signal context");
+        GuestUcontext context{};
+        FromHost(host.uc_mcontext, context.mcontext);
+        CallHandler(callback, signal, context);
+        return true;
+    }
+    guestSignalCallback.store(callback, std::memory_order_release);
+    struct sigaction action{};
+    action.sa_sigaction = DeliverGuestSignal;
+    action.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(HostGuestSignal, &action, nullptr) != 0)
+        throw std::system_error(errno, std::generic_category(), "Installing guest signal delivery");
+    const int result = pthread_kill(thread->hostThread, HostGuestSignal);
+    if (result == ESRCH) return false;
+    if (result != 0) throw std::system_error(result, std::generic_category(), "Delivering guest signal");
+    return true;
+#endif
+}
+
+extern "C" void GuestCaptureFatalSignal_nid_no_patch(int signal, const void* context) noexcept {
+    if (context == nullptr) return;
+    const auto& m = static_cast<const GuestUcontext*>(context)->mcontext;
+    const GuestCoredumpStopInfoCpu stop{scePthreadSelf(), signal, 0};
+    const GuestCoredumpThreadContextInfo registers{m.rdi, m.rsi, m.rdx, m.rcx, m.r8, m.r9,
+        m.rax, m.rbx, m.rbp, m.r10, m.r11, m.r12, m.r13, m.r14, m.r15, m.rip, m.rflags, m.rsp};
+    try { GuestCoredumpCapture_nid_no_patch(&stop, &registers, nullptr); }
+    catch (const std::exception& error) { std::fprintf(stderr, "Guest signal core capture failed: %s\n", error.what()); }
+    catch (...) { std::fputs("Guest signal core capture failed\n", stderr); }
 }
 
 #ifdef _WIN32

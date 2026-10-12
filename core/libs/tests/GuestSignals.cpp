@@ -60,15 +60,14 @@ int main() {
     Require(pthread_kill_nid_postfix(nullptr, 15) == 3);
     Require(pthread_kill_nid_postfix(nullptr, 128) == 3);
     Require(pthread_kill_nid_postfix(nullptr, 129) == 22);
-    bool threw = false;
-    try { pthread_kill_nid_postfix(reinterpret_cast<void*>(std::uintptr_t{0x10}), 15); }
-    catch (const std::runtime_error&) { threw = true; }
-    Require(threw && received == 0);
+    Require(pthread_kill_nid_postfix(reinterpret_cast<void*>(std::uintptr_t{0x10}), 15) == 3 && received == 0);
     Require(signal_nid_postfix(15, ignore) != invalid);
     received = 0;
     Require(raise_nid_postfix(15) == 0 && received == 0);
     Require(signal_nid_postfix(15, nullptr) == ignore);
-    Require(raise_nid_postfix(100) == -1 && *__error_nid_postfix() == 22);
+    Require(signal_nid_postfix(100, Callback) == nullptr);
+    Require(raise_nid_postfix(100) == 0 && received == 100);
+    Require(signal_nid_postfix(100, nullptr) == Callback);
     GuestSignalSet blocked{{0x20, 0, 0, 0}};
     GuestSignalSet previous{{}};
     Require(sigprocmask_nid_postfix(3, &blocked, &previous) == 0);
@@ -115,13 +114,7 @@ int main() {
         Require(sigaction_nid_postfix(recorded, &defaults, nullptr) == 0);
     }
     Require(sigaction_nid_postfix(6, &crash, nullptr) == 0);
-    bool rejected = false;
-    try {
-        raise_nid_postfix(6);
-    } catch (const std::runtime_error&) {
-        rejected = true;
-    }
-    Require(rejected);
+    Require(raise_nid_postfix(6) == 0);
     Require(sigaction_nid_postfix(6, &defaults, &current) == 0 && current.handler == infoCallback && current.flags == 0x50);
 
     *__error_nid_postfix() = 0;

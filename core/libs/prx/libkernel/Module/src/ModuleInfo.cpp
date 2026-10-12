@@ -347,6 +347,28 @@ std::uint64_t GuestSegmentBytes() {
 
 extern "C" {
 
+std::int32_t APS5_VABI sceKernelInternalMemoryGetModuleSegmentInfo_nid_postfix(void* output) {
+    if (!output) throw std::runtime_error("sceKernelInternalMemoryGetModuleSegmentInfo: null output");
+    const auto images = GuestImages();
+    if (images.empty()) throw std::runtime_error("sceKernelInternalMemoryGetModuleSegmentInfo: no main executable");
+    ModuleInfo info{};
+#ifdef _WIN32
+    if (!Fill(images.front().address, info))
+        throw std::runtime_error("sceKernelInternalMemoryGetModuleSegmentInfo: main executable is not mapped");
+#else
+    ImageSearch<ModuleInfo> search{images.front().address, &info, false};
+    dl_iterate_phdr(FindImage<ModuleInfo>, &search);
+    if (!search.found)
+        throw std::runtime_error("sceKernelInternalMemoryGetModuleSegmentInfo: main executable is not mapped");
+#endif
+    if (info.segment_count == 0)
+        throw std::runtime_error("sceKernelInternalMemoryGetModuleSegmentInfo: main executable has no load segment");
+    const std::uint64_t result[]{info.segments[0].address, info.segments[0].size};
+    static_assert(sizeof(result) == 16);
+    std::memcpy(output, result, sizeof(result));
+    return 0;
+}
+
 int APS5_VABI sceKernelGetModuleInfoFromAddr(std::uint64_t address, int flags, ModuleInfoEx* info) {
     if (!info) return SCE_KERNEL_ERROR_EFAULT;
     if (flags != 2) throw std::invalid_argument("sceKernelGetModuleInfoFromAddr: unsupported flags " + std::to_string(flags));

@@ -3,6 +3,7 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/File/include/RandomDevice.hpp"
+#include "prx/libkernel/Equeue/DescriptorEvents.hpp"
 #include "prx/libkernel/Socket/include/SocketPoll.hpp"
 #include "prx/libkernel/Socket/include/SocketSelectDeadline.hpp"
 #include "prx/libkernel/Socket/include/SocketRuntime.hpp"
@@ -137,13 +138,17 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
     std::vector<std::size_t> hostSlots;
     std::vector<KernelSocketPoll::Entry> devices;
     std::vector<KernelSocketPoll::Entry> requested;
+    std::vector<std::size_t> queueSlots;
     for (int descriptor = 0; descriptor < nfds; ++descriptor) {
         short events = 0;
         if (DescriptorSet(readfds, descriptor)) events |= KernelSocketPoll::Readable;
         if (DescriptorSet(writefds, descriptor)) events |= KernelSocketPoll::Writable;
         if (DescriptorSet(exceptfds, descriptor)) events |= KernelSocketPoll::Urgent;
         if (events == 0) continue;
-        if (File::IsRandomDevice(descriptor)) devices.push_back({descriptor, events, static_cast<short>(events & (KernelSocketPoll::Readable | KernelSocketPoll::Writable))});
+        if (IsKqueueDescriptor_nid_no_patch(descriptor)) {
+            queueSlots.push_back(requested.size());
+            requested.push_back({descriptor, events, 0});
+        } else if (File::IsRandomDevice(descriptor)) devices.push_back({descriptor, events, static_cast<short>(events & (KernelSocketPoll::Readable | KernelSocketPoll::Writable))});
         else if (descriptor <= 2) devices.push_back({descriptor, events, static_cast<short>(descriptor == 0 ? 0 : events & KernelSocketPoll::Writable)});
         else {
             sockets.push_back({descriptor, events, 0});
@@ -206,6 +211,17 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
             waitMilliseconds = static_cast<int>(std::clamp<std::int64_t>(roundedMilliseconds, 0, 100));
         }
         if (devicesReady) waitMilliseconds = 0;
+        for (const auto index : queueSlots) {
+            auto& entry = requested[index];
+            const int result = PollKqueueDescriptor_nid_no_patch(entry.descriptor, entry.events);
+            if (result < 0) {
+                *__error_nid_postfix() = 9;
+                return -1;
+            }
+            entry.revents = static_cast<short>(result);
+            if (entry.revents) waitMilliseconds = 0;
+        }
+        if (!queueSlots.empty()) waitMilliseconds = std::min(waitMilliseconds, 1);
 #ifndef _WIN32
         if (!hosts.empty() && !sockets.empty()) {
             if (poller == nullptr) UnknownDescriptor(sockets.front().descriptor, false);

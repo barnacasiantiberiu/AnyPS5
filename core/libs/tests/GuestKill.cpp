@@ -42,5 +42,7 @@ int main() {
     Require(signal_nid_postfix(15, ignore) == Callback);
     Require(kill_nid_postfix(self, 15) == 0 && received == 0);
     Require(signal_nid_postfix(15, nullptr) == ignore);
-    Fails(self, 100, 22);
+    Require(signal_nid_postfix(100, Callback) == nullptr);
+    Require(kill_nid_postfix(self, 100) == 0 && received == 100);
+    Require(signal_nid_postfix(100, nullptr) == Callback);
 }

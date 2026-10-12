@@ -1,4 +1,5 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include "ModuleChecks.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -12,7 +13,7 @@ std::int64_t APS5_VABI pwrite_nid_disambig1_nid_postfix(int, const void*, std::s
 int APS5_VABI close_nid_postfix(int);
 int* APS5_VABI __error_nid_postfix();
 }
-static void Require(bool value) { if (!value) std::abort(); }
+using ModuleTest::Require;
 static const char* const anonymous = reinterpret_cast<const char*>(1);
 static void RequireInvalid(const char* path, int flags) {
     *__error_nid_postfix() = 0;
@@ -37,9 +38,7 @@ int main() {
     Require(pread_nid_postfix(first, &last, 1, 0x3fff) == 1 && last == 0);
     Require(pread_nid_postfix(first, &last, 1, 0x4000) == 0);
     Require(pread_nid_postfix(second, back, sizeof(back), 0) == 0);
-#ifndef _WIN32
     Require(pwrite_nid_disambig1_nid_postfix(third, text, sizeof(text), 0) == 0);
-#endif
     Require(ftruncate_nid_postfix(third, 0x4000) == 0);
     Require(pwrite_nid_disambig1_nid_postfix(third, text, sizeof(text), 0) == static_cast<std::int64_t>(sizeof(text)));
     Require(close_nid_postfix(first) == 0 && close_nid_postfix(second) == 0 && close_nid_postfix(third) == 0);
@@ -51,15 +50,5 @@ int main() {
     RequireInvalid(anonymous, 0x2 | 0x4);
     RequireInvalid("/anyps5-shm", 0x1);
     RequireInvalid("/anyps5-shm", 0x202 | 0x8);
-#ifdef _WIN32
-    bool threw = false;
-    try {
-        shm_open_nid_postfix("/anyps5-shm", 0x202, 0600);
-    } catch (const std::runtime_error&) {
-        threw = true;
-    }
-    Require(threw);
-#else
     RequireInvalid("", 0x202);
-#endif
 }

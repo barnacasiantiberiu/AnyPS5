@@ -2,6 +2,7 @@
 #include "prx/libkernel/File/include/DirectoryDescriptor.hpp"
 #include "prx/libkernel/File/include/File.hpp"
 #include "prx/libkernel/File/include/RandomDevice.hpp"
+#include "prx/libkernel/Equeue/DescriptorEvents.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/HostDescriptorFork.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
@@ -512,6 +513,38 @@ FcntlArgument FcntlArgumentOf(int command) {
 }
 
 int Fcntl(int fd, int command, std::intptr_t argument) {
+    if (IsKqueueDescriptor_nid_no_patch(fd)) {
+        switch (command) {
+            case GetStatusFlags: {
+                const HostDescriptorOperation operation;
+                std::lock_guard lock(g_mutex);
+                return ReadWrite | Materialize(fd).status->Load();
+            }
+            case SetStatusFlags: {
+                const HostDescriptorOperation operation;
+                std::lock_guard lock(g_mutex);
+                auto& status = *Materialize(fd).status;
+                const DescriptorStatus::Guard stateLock(status);
+                status.Store((status.Load() & ~SettableStatusFlags) | (static_cast<int>(argument) & SettableStatusFlags));
+                return Fail(GuestEnotty);
+            }
+            case GetOwner:
+            case SetOwner:
+                return Fail(GuestEnotty);
+            case OldGetLock:
+            case OldSetLock:
+            case OldSetLockWait:
+            case GetLock:
+            case SetLock:
+            case SetLockWait:
+                return Fail(argument == 0 ? GuestEfault : GuestEbadf);
+            case ReadAhead:
+            case DarwinReadAhead:
+                return Fail(GuestEbadf);
+            default:
+                break;
+        }
+    }
     switch (command) {
         case DuplicateCommand:
         case DuplicateCloseOnExec: {
@@ -575,6 +608,7 @@ int Ioctl(int fd, std::uint64_t request, void* argument) {
     const auto command = static_cast<std::uint32_t>(request);
     const std::uint32_t length = (command >> 16) & 0x1fff;
     if ((command & RequestIn) && length != 0 && argument == nullptr) return Fail(GuestEfault);
+    if (IsKqueueDescriptor_nid_no_patch(fd)) return Fail(GuestEnotty);
     const auto kind = Classify(fd, "ioctl");
     if (!kind) return Fail(GuestEbadf);
     if (command == NonblockingRequest) {
@@ -605,6 +639,7 @@ void RememberDescriptor(int fd, int openFlags) {
 
 void ShareDescriptor(int from, int to) {
     const HostDescriptorOperation operation;
+    DuplicateKqueueDescriptor_nid_no_patch(from, to);
     std::lock_guard lock(g_mutex);
     auto status = Materialize(from).status;
     g_entries[to] = Entry{false, std::move(status)};
@@ -612,6 +647,7 @@ void ShareDescriptor(int from, int to) {
 
 void ForgetDescriptor(int fd) {
     const HostDescriptorOperation operation;
+    EqueueDescriptorClosed(fd);
     std::lock_guard lock(g_mutex);
     g_entries.erase(fd);
 }

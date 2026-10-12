@@ -132,7 +132,7 @@ int main() {
     Require(sceKernelDeleteEqueue(blocking) == SCE_OK);
 
     Require(sceKernelAddReadEvent(eq, client, 1, nullptr) == SCE_KERNEL_ERROR_EBADF);
-    Require(Rejects(sceKernelAddReadEvent, eq, 0, 1));
+    Require(sceKernelAddReadEvent(eq, -1, 1, nullptr) == SCE_KERNEL_ERROR_EBADF);
     Require(Rejects(sceKernelAddWriteEvent, eq, accepted, 64));
 
     Require(close_nid_postfix(accepted) == 0);
