@@ -22,6 +22,8 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
+      - run: python3 tools/tests/test_readme_status.py
+      - run: python3 tools/update_readme_status.py --check
       - run: python3 tools/progress.py out
       - uses: actions/upload-pages-artifact@v5
         with:

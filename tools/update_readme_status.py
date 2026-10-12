@@ -1,5 +1,7 @@
 import argparse
+import hashlib
 import importlib.util
+import json
 import subprocess
 import sys
 import tempfile
@@ -10,6 +12,7 @@ START = "<!-- anyps5-status:start -->"
 END = "<!-- anyps5-status:end -->"
 OPCODES = "core/shader/recompiler/RdnaDecoder/include/RdnaDecoder/RdnaOpcode.hpp"
 INPUTS = ["tools/progress.py", "tools/rdna_isa.txt", OPCODES, "core/libs/prx"]
+PAGE = "https://barnacasiantiberiu.github.io/AnyPS5/"
 
 
 def git(*args, data=None):
@@ -21,27 +24,19 @@ def render(root):
     progress = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(progress)
     libraries, shaders = progress.collect_libraries(), progress.collect_shaders()
-    lines = [START, "", "Status of this fork, generated from the code in this commit.", "",
-             "| Component | Counted | Known total | Progress |", "| --- | ---: | ---: | ---: |"]
-    for label, data in [("System library functions*", libraries), ("Decoded shader instructions*", shaders)]:
-        lines.append(f'| {label} | {data["done"]} | {data["total"]} | {data["percent"]:.2f}% |')
-    remaining = libraries["total"] - libraries["done"]
-    lines += ["", f"**{remaining} known library functions remain marked unimplemented.**", "",
-              "*These are static source counts, not test coverage or a guarantee of game compatibility. "
-              "The library total includes only declarations known to this project. Shader progress counts "
-              "recognized instructions, not verified GPU execution. See the [counting rules](docs/dev/PROGRESS.md).", "",
-              "<details>", "<summary>System libraries: status by module</summary>", "",
-              "| Library | Counted | Known total | Progress |", "| --- | ---: | ---: | ---: |"]
-    for group in libraries["groups"]:
-        name = group["name"]
-        total = group["done"] + group["todo"]
-        if "shared_sources" in group:
-            lines.append(f'| {name} | Shared with {group["shared_sources"]} | — | — |')
-        elif total:
-            lines.append(f'| {name} | {group["done"]} | {total} | {100 * group["done"] / total:.2f}% |')
-        else:
-            lines.append(f"| {name} | No declared exports | — | — |")
-    lines += ["", "</details>", "", END]
+    libraries["groups"].sort(key=lambda group: group["name"])
+    snapshot = json.dumps({"libraries": libraries, "shaders": shaders}, sort_keys=True).encode("utf-8")
+    version = hashlib.sha256(snapshot).hexdigest()[:16]
+    lines = [START, "",
+             f'<!-- Source snapshot: libraries {libraries["done"]}/{libraries["total"]} '
+             f'({libraries["percent"]:.2f}%); shaders {shaders["done"]}/{shaders["total"]} '
+             f'({shaders["percent"]:.2f}%). -->', "",
+             f"[![libraries]({PAGE}badge-libraries.svg?v={version})]({PAGE}) "
+             f"[![shaders]({PAGE}badge-shaders.svg?v={version})]({PAGE})", "",
+             f"[![progress map]({PAGE}progress.svg?v={version})]({PAGE})", "",
+             "<sub>* System libraries: percentage of the functions known to the project so far "
+             "(declared in [core/libs/prx](core/libs/prx)), not of every PS5 system function. "
+             "The total grows as more functions are declared.</sub>", "", END]
     return "\n".join(lines)
 
 
