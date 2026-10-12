@@ -2,6 +2,9 @@
 
 #include <cstdint>
 #include <cstring>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
 
 static constexpr float SoundSpeed = 343.0f;
 
@@ -49,9 +52,136 @@ static void TestResetSourceParam() {
     Require(sceNgs2GeomResetSourceParam(nullptr) == SCE_NGS2_ERROR_INVALID_OUT_ADDRESS);
 }
 
+static Ngs2GeomListenerParam Listener() {
+    Ngs2GeomListenerParam param{};
+    Require(sceNgs2GeomResetListenerParam(&param) == SCE_NGS2_OK);
+    return param;
+}
+
+static void RequireMatrix(const Ngs2GeomListenerWork& work, const float (&expected)[4][4]) {
+    for (std::size_t row = 0; row < 4; row++) {
+        for (std::size_t column = 0; column < 4; column++) Require(std::abs(work.matrix[row][column] - expected[row][column]) < 0.00001f);
+    }
+}
+
+static void TestListenerTransform() {
+    auto param = Listener();
+    param.velocity = {2.0f, -3.0f, 4.0f};
+    param.sound_speed = 1500.0f;
+    Ngs2GeomListenerWork work;
+    std::memset(&work, 0x5a, sizeof(work));
+    Require(sceNgs2GeomCalcListener(&param, &work, 0) == SCE_NGS2_OK);
+    RequireMatrix(work, {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}});
+    Require(work.velocity.x == 2.0f && work.velocity.y == -3.0f && work.velocity.z == 4.0f);
+    Require(work.sound_speed == 1500.0f && work.coordinate == 0);
+    Require(work.reserved[0] == 0 && work.reserved[1] == 0 && work.reserved[2] == 0);
+
+    param.position = {3.0f, 4.0f, 5.0f};
+    Require(sceNgs2GeomCalcListener(&param, &work, 0) == SCE_NGS2_OK);
+    RequireMatrix(work, {{1, 0, 0, -3}, {0, 1, 0, -4}, {0, 0, 1, -5}, {0, 0, 0, 1}});
+
+    param.orient_front = {2.0f, 0.0f, 0.0f};
+    param.orient_up = {1.0f, 3.0f, 0.0f};
+    Require(sceNgs2GeomCalcListener(&param, &work, 0) == SCE_NGS2_OK);
+    RequireMatrix(work, {{0, 0, -1, 5}, {0, 1, 0, -4}, {1, 0, 0, -3}, {0, 0, 0, 1}});
+
+    param.orient_front = {0.0f, 0.0f, -2.0f};
+    param.orient_up = {0.0f, 3.0f, 0.0f};
+    Require(sceNgs2GeomCalcListener(&param, &work, 1) == SCE_NGS2_OK);
+    RequireMatrix(work, {{1, 0, 0, -3}, {0, 1, 0, -4}, {0, 0, -1, 5}, {0, 0, 0, 1}});
+    Require(work.coordinate == 1);
+
+    param.orient_front = {0.0f, 0.0f, std::numeric_limits<float>::max()};
+    param.orient_up = {0.0f, std::numeric_limits<float>::min(), 0.0f};
+    Require(sceNgs2GeomCalcListener(&param, &work, 0) == SCE_NGS2_OK);
+    RequireMatrix(work, {{1, 0, 0, -3}, {0, 1, 0, -4}, {0, 0, 1, -5}, {0, 0, 0, 1}});
+}
+
+static void RejectListener(const Ngs2GeomListenerParam* param, std::uint32_t flags) {
+    Ngs2GeomListenerWork work;
+    std::memset(&work, 0x5a, sizeof(work));
+    unsigned char before[sizeof(work)];
+    std::memcpy(before, &work, sizeof(work));
+    bool rejected = false;
+    try {
+        sceNgs2GeomCalcListener(param, &work, flags);
+    } catch (const std::exception&) {
+        rejected = true;
+    }
+    Require(rejected);
+    Require(std::memcmp(before, &work, sizeof(work)) == 0);
+}
+
+static void TestInvalidListener() {
+    auto param = Listener();
+    Require(sceNgs2GeomCalcListener(&param, nullptr, 0) == SCE_NGS2_ERROR_INVALID_OUT_ADDRESS);
+    RejectListener(nullptr, 0);
+    RejectListener(&param, 2);
+    RejectListener(&param, 0xffffffffu);
+    for (const float value : {0.0f, -1.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+        param.sound_speed = value;
+        RejectListener(&param, 0);
+    }
+    param = Listener();
+    param.orient_front = {};
+    RejectListener(&param, 0);
+    param = Listener();
+    param.orient_up = param.orient_front;
+    RejectListener(&param, 0);
+    param = Listener();
+    param.orient_up = {};
+    RejectListener(&param, 0);
+    param = Listener();
+    param.position.x = std::numeric_limits<float>::infinity();
+    RejectListener(&param, 0);
+    param = Listener();
+    param.velocity.z = std::numeric_limits<float>::quiet_NaN();
+    RejectListener(&param, 0);
+    param = Listener();
+    param.orient_front.y = std::numeric_limits<float>::quiet_NaN();
+    RejectListener(&param, 0);
+}
+
+static void TestListenerInvariants() {
+    for (int angle = 0; angle < 360; angle += 5) {
+        const double radians = angle * 3.14159265358979323846 / 180.0;
+        auto param = Listener();
+        param.position = {17.0f, -23.0f, 11.0f};
+        param.orient_front = {static_cast<float>(std::sin(radians)), 0, static_cast<float>(std::cos(radians))};
+        param.orient_up = {param.orient_front.x, 3.0f, param.orient_front.z};
+        const auto input = param;
+        for (std::uint32_t flags : {0u, 1u}) {
+            struct Guarded {
+                std::uint64_t before = 0x123456789ABCDEF0ull;
+                Ngs2GeomListenerWork work{};
+                std::uint64_t after = 0xFEDCBA9876543210ull;
+            } output;
+            Require(sceNgs2GeomCalcListener(&param, &output.work, flags) == SCE_NGS2_OK);
+            const auto& matrix = output.work.matrix;
+            for (int row = 0; row < 3; ++row) {
+                const double origin = matrix[row][0] * 17.0 + matrix[row][1] * -23.0 + matrix[row][2] * 11.0 + matrix[row][3];
+                Require(std::abs(origin) < 0.00001);
+                for (int other = 0; other < 3; ++other) {
+                    double dot = 0;
+                    for (int column = 0; column < 3; ++column) dot += matrix[row][column] * matrix[other][column];
+                    Require(std::abs(dot - (row == other ? 1.0 : 0.0)) < 0.00001);
+                }
+            }
+            const float handedness = flags ? -1.0f : 1.0f;
+            Require(std::abs(matrix[0][0] - handedness * std::cos(radians)) < 0.00001);
+            Require(std::abs(matrix[0][2] + handedness * std::sin(radians)) < 0.00001);
+            Require(output.before == 0x123456789ABCDEF0ull && output.after == 0xFEDCBA9876543210ull);
+            Require(std::memcmp(&param, &input, sizeof(param)) == 0);
+        }
+    }
+}
+
 int main() {
     TestLayouts();
     TestResetListenerParam();
     TestResetSourceParam();
+    TestListenerTransform();
+    TestInvalidListener();
+    TestListenerInvariants();
     return 0;
 }
