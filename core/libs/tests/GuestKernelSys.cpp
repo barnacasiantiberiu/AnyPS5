@@ -36,6 +36,7 @@ int APS5_VABI setsid_nid_postfix(void);
 int APS5_VABI link_nid_postfix(const char*, const char*);
 int APS5_VABI symlink_nid_postfix(const char*, const char*);
 int APS5_VABI openat_nid_postfix(int, const char*, int, ...);
+int APS5_VABI mkdirat_nid_postfix(int, const char*, std::uint16_t);
 std::int64_t APS5_VABI sceKernelRead(int, void*, std::size_t);
 std::uint16_t APS5_VABI umask_nid_postfix(std::uint16_t);
 int* APS5_VABI __error_nid_postfix();
@@ -52,7 +53,55 @@ int Error() {
     return *__error_nid_postfix();
 }
 
-int main() {
+void TestMkdirat() {
+    const auto root = std::filesystem::path("anyps5-kernel-sys-test-" +
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    Require(std::filesystem::create_directory(root));
+    const auto cleanupRoot = std::filesystem::absolute(root).lexically_normal();
+    const auto cleanupParent = std::filesystem::current_path();
+    const auto file = (root / "file.txt").string();
+    std::ofstream(file).put('x');
+    const int base = sceKernelOpen(root.string().c_str(), SCE_KERNEL_O_RDONLY | SCE_KERNEL_O_DIRECTORY, 0);
+    const int plain = sceKernelOpen(file.c_str(), SCE_KERNEL_O_RDONLY, 0);
+    Require(base >= 0 && plain >= 0);
+    Require(mkdirat_nid_postfix(base, "dir", 0700) == 0 && std::filesystem::is_directory(root / "dir"));
+    Require(mkdirat_nid_postfix(base, "dir", 0700) == -1 && Error() == 17);
+    Require(mkdirat_nid_postfix(base, "file.txt", 0700) == -1 && Error() == 17);
+    Require(mkdirat_nid_postfix(base, "missing/child", 0700) == -1 && Error() == 2);
+    Require(mkdirat_nid_postfix(base, "file.txt/child", 0700) == -1 && Error() == 20);
+    Require(mkdirat_nid_postfix(base, "slash_dir/", 0700) == 0 && std::filesystem::is_directory(root / "slash_dir"));
+    const auto guestSubdir = "/" + root.filename().string() + "/abs_dir";
+    Require(mkdirat_nid_postfix(-1, guestSubdir.c_str(), 0700) == 0 && std::filesystem::is_directory(root / "abs_dir"));
+    const auto cwdDir = (root / "cwd_dir").string();
+    Require(mkdirat_nid_postfix(-100, cwdDir.c_str(), 0700) == 0 && std::filesystem::is_directory(root / "cwd_dir"));
+    Require(mkdirat_nid_postfix(plain, "child", 0700) == -1 && Error() == 20);
+    Require(mkdirat_nid_postfix(-1, "child", 0700) == -1 && Error() == 9);
+    Require(mkdirat_nid_postfix(base, nullptr, 0700) == -1 && Error() == 14);
+    Require(mkdirat_nid_postfix(base, "", 0700) == -1 && Error() == 2);
+    Require(mkdirat_nid_postfix(base, "dir/nested", 0755) == 0 && std::filesystem::is_directory(root / "dir/nested"));
+    Require(mkdirat_nid_postfix(base, "dir/../sibling", 0700) == 0 && std::filesystem::is_directory(root / "sibling"));
+    Require(mkdirat_nid_postfix(base, "missing/../escaped", 0700) == -1 && Error() == 2);
+    Require(mkdirat_nid_postfix(base, "file.txt/../escaped", 0700) == -1 && Error() == 20);
+    Require(!std::filesystem::exists(root / "escaped"));
+    Require(mkdirat_nid_postfix(base, ".", 0700) == -1 && Error() == 17);
+    Require(std::filesystem::file_size(root / "file.txt") == 1);
+    Require(fchdir_nid_postfix(base) == 0);
+    Require(mkdirat_nid_postfix(-100, "relative_cwd", 0700) == 0 && std::filesystem::is_directory(cleanupRoot / "relative_cwd"));
+    Require(chdir_nid_postfix("/") == 0);
+    Require(sceKernelClose(plain) == 0 && sceKernelClose(base) == 0);
+    Require(mkdirat_nid_postfix(base, "closed_fd", 0700) == -1 && Error() == 9);
+    Require(!std::filesystem::exists(cleanupRoot / "closed_fd"));
+    Require(cleanupRoot.parent_path() == cleanupParent && cleanupRoot.filename().string().starts_with("anyps5-kernel-sys-test-"));
+    std::filesystem::remove_all(cleanupRoot);
+}
+
+int main(int argc, char** argv) {
+    if (argc == 2) {
+        Require(std::strcmp(argv[1], "mkdirat") == 0);
+        TestMkdirat();
+        return 0;
+    }
+
     Require(setsid_nid_postfix() == -1 && Error() == 1);
     Require(umask_nid_postfix(0) == 022);
     Require(umask_nid_postfix(07777) == 0);
@@ -60,6 +109,8 @@ int main() {
     const auto root = std::filesystem::path("anyps5-kernel-sys-test-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     Require(std::filesystem::create_directory(root));
+    const auto cleanupRoot = std::filesystem::absolute(root).lexically_normal();
+    const auto cleanupParent = std::filesystem::current_path();
     const auto file = (root / "file.txt").string();
     std::ofstream(file).put('x');
     const int descriptor = open_nid_postfix(file.c_str(), 0, 0);
@@ -232,6 +283,7 @@ int main() {
     Require(openat_nid_postfix(base, nullptr, SCE_KERNEL_O_RDONLY) == -1 && Error() == 14);
     Require(openat_nid_postfix(base, "", SCE_KERNEL_O_RDONLY) == -1 && Error() == 2);
     Require(sceKernelClose(base) == 0);
-    std::filesystem::remove_all(root);
+    Require(cleanupRoot.parent_path() == cleanupParent && cleanupRoot.filename().string().starts_with("anyps5-kernel-sys-test-"));
+    std::filesystem::remove_all(cleanupRoot);
     return 0;
 }

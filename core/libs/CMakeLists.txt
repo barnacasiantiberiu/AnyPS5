@@ -178,8 +178,10 @@ if(BUILD_TESTING)
     target_link_libraries(guest_kernel_sys_tests PRIVATE libkernel_sys libkernel libc)
     configure_windows_unwind(guest_kernel_sys_tests)
     add_test(NAME guest_kernel_sys COMMAND guest_kernel_sys_tests)
+    add_test(NAME guest_kernel_mkdirat COMMAND guest_kernel_sys_tests mkdirat)
+    set_tests_properties(guest_kernel_mkdirat PROPERTIES LABELS "module-functional;module:libkernel_sys" TIMEOUT 20)
     if(WIN32)
-        set_tests_properties(guest_kernel_sys PROPERTIES ENVIRONMENT_MODIFICATION
+        set_tests_properties(guest_kernel_sys guest_kernel_mkdirat PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel_sys>")
     endif()
     if(APPLE)

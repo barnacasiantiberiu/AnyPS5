@@ -12,6 +12,7 @@
 #ifdef __linux__
 #include <cerrno>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 #include "SceTypes.hpp"
@@ -37,6 +38,7 @@ constexpr int GuestEnoent = 2;
 constexpr int GuestEperm = 1;
 constexpr int GuestEio = 5;
 constexpr int GuestEfault = 14;
+constexpr int GuestEnotdir = 20;
 constexpr int GuestEinval = 22;
 constexpr int GuestEexist = 17;
 constexpr int GuestExdev = 18;
@@ -252,6 +254,43 @@ int APS5_VABI openat_nid_postfix(int fd, const char* path, int flags, ...) {
     const int result = OpenInDirectory_nid_no_patch(fd, path, flags, static_cast<std::uint16_t>(mode));
     if (result < 0) return static_cast<int>(Fail(result & 0xffff));
     return result;
+}
+
+int APS5_VABI mkdir_nid_postfix(const char* path, std::uint16_t mode);
+
+int APS5_VABI mkdirat_nid_postfix(int fd, const char* path, std::uint16_t mode) {
+    if (path == nullptr) return static_cast<int>(Fail(GuestEfault));
+    if (*path == '\0') return static_cast<int>(Fail(GuestEnoent));
+    if (fd == GuestAtFdcwd || *path == '/') return mkdir_nid_postfix(path, mode);
+    int error = 0;
+    const char* base = GetDirectoryDescriptorPath_nid_no_patch(fd, &error);
+    if (base == nullptr) return static_cast<int>(Fail(error));
+    auto native = std::filesystem::path(reinterpret_cast<const char8_t*>(base));
+    const auto relative = std::filesystem::path(reinterpret_cast<const char8_t*>(path));
+#ifdef _WIN32
+    if (relative.has_root_path()) return static_cast<int>(Fail(GuestEinval));
+    auto trimmed = relative;
+    while (!trimmed.has_filename() && trimmed.has_relative_path()) trimmed = trimmed.parent_path();
+    std::error_code ec;
+    for (const auto& component : trimmed.parent_path()) {
+        native /= component;
+        const auto status = std::filesystem::status(native, ec);
+        if (ec) return static_cast<int>(Fail(FilesystemError(ec)));
+        if (!std::filesystem::exists(status)) return static_cast<int>(Fail(GuestEnoent));
+        if (!std::filesystem::is_directory(status)) return static_cast<int>(Fail(GuestEnotdir));
+    }
+    native /= trimmed.filename();
+    if (!CreateDirectoryW(native.c_str(), nullptr)) {
+        const auto errorCode = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+        return static_cast<int>(Fail(FilesystemError(errorCode)));
+    }
+#else
+    native /= relative;
+    if (::mkdirat(fd, path, static_cast<mode_t>(mode & 0777)) != 0)
+        return static_cast<int>(Fail(FilesystemError(std::error_code(errno, std::generic_category()))));
+#endif
+    RecordWrittenPath_nid_no_patch(native);
+    return 0;
 }
 
 }
