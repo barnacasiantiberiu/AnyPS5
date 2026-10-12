@@ -1,0 +1,3 @@
+#!/bin/sh
+readme_python=$(git config --get anyps5.python) || readme_python=python3
+exec "$readme_python" tools/update_readme_status.py --staged
