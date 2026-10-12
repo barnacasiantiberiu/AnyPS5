@@ -8,6 +8,7 @@ if(BUILD_TESTING)
     target_link_libraries(guest_json_tests PRIVATE libSceJson2 libc)
     configure_windows_unwind(guest_json_tests)
     add_test(NAME guest_json COMMAND guest_json_tests)
+    set_tests_properties(guest_json PROPERTIES TIMEOUT 30 LABELS "module-functional;module:libSceJson2")
     if(WIN32)
         set_tests_properties(guest_json PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceJson2>")

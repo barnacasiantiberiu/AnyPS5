@@ -49,6 +49,8 @@ void APS5_VABI _ZN3sce4Json5Array8iteratorD1Ev(Iterator*);
 Iterator* APS5_VABI _ZN3sce4Json5Array8iteratorppEv(Iterator*);
 Value* APS5_VABI _ZNK3sce4Json5Array8iteratordeEv(const Iterator*);
 bool APS5_VABI _ZNK3sce4Json5Array8iteratorneERKS2_(const Iterator*, const Iterator*);
+void APS5_VABI _ZN3sce4Json5Array8iteratorC1Ev(Iterator*);
+Iterator* APS5_VABI _ZN3sce4Json5Array8iteratoraSERKS2_(Iterator*, const Iterator*);
 void APS5_VABI _ZN3sce4Json6ObjectC1Ev(Object*);
 void APS5_VABI _ZN3sce4Json6ObjectD1Ev(Object*);
 Value* APS5_VABI _ZN3sce4Json6ObjectixERKNS0_6StringE(Object*, const String*);
@@ -85,6 +87,10 @@ int APS5_VABI _ZN3sce4Json6Parser5parseERNS0_5ValueEPKcm(Value*, const char*, st
 int APS5_VABI _ZN3sce4Json6Parser5parseERNS0_5ValueEPFiRcPvES5_(Value*, int (APS5_VABI*)(char&, void*), void*);
 bool APS5_VABI _ZNK3sce4Json6Object5emptyEv(const Object*);
 std::size_t APS5_VABI _ZNK3sce4Json6Object4sizeEv(const Object*);
+void APS5_VABI _ZN3sce4Json6Object4PairC1ERKNS0_6StringERKNS0_5ValueE(Pair*, const String*, const Value*);
+void APS5_VABI _ZN3sce4Json6Object4PairD1Ev(Pair*);
+String* APS5_VABI _ZN3sce4Json6StringaSERKS1_(String*, const String*);
+void APS5_VABI _ZN3sce4Json5ValueC1El(Value*, std::int64_t);
 const Object* APS5_VABI _ZNK3sce4Json5Value9getObjectEv(const Value*);
 void APS5_VABI _ZN3sce4Json5ValueC1ENS0_9ValueTypeE(Value*, std::int32_t);
 const Value* APS5_VABI _ZNK3sce4Json5Value8getValueEm(const Value*, std::size_t);
@@ -610,6 +616,100 @@ static void StreamParse() {
     _ZN3sce4Json5ValueD1Ev(&root);
 }
 
+static void IteratorAssignmentAndPair() {
+    Array array{};
+    _ZN3sce4Json5ArrayC1Ev(&array);
+    Value flag{}, real{};
+    _ZN3sce4Json5ValueC1Eb(&flag, true);
+    _ZN3sce4Json5ValueC1Ed(&real, 2.5);
+    _ZN3sce4Json5Array9push_backERKNS0_5ValueE(&array, &flag);
+    _ZN3sce4Json5Array9push_backERKNS0_5ValueE(&array, &real);
+    _ZN3sce4Json5ValueD1Ev(&flag);
+    _ZN3sce4Json5ValueD1Ev(&real);
+
+    struct GuardedIterator {
+        std::uint64_t before = 0x123456789ABCDEF0ull;
+        Iterator iterator{reinterpret_cast<void*>(1)};
+        std::uint64_t after = 0xFEDCBA9876543210ull;
+    } guarded;
+    Iterator begin{}, end{};
+    auto& it = guarded.iterator;
+    _ZNK3sce4Json5Array5beginEv(&begin, &array);
+    _ZNK3sce4Json5Array3endEv(&end, &array);
+    _ZN3sce4Json5Array8iteratorC1Ev(&it);
+    Require(it.position == nullptr);
+    Require(guarded.before == 0x123456789ABCDEF0ull && guarded.after == 0xFEDCBA9876543210ull);
+    Require(_ZN3sce4Json5Array8iteratoraSERKS2_(&it, &begin) == &it);
+    Require(_ZNK3sce4Json5Array8iteratordeEv(&it) == _ZNK3sce4Json5Array5frontEv(&array));
+    Require(!_ZNK3sce4Json5Array8iteratorneERKS2_(&it, &begin));
+
+    Require(_ZN3sce4Json5Array8iteratoraSERKS2_(&it, &it) == &it);
+    _ZN3sce4Json5Array8iteratorppEv(&it);
+    Require(_ZNK3sce4Json5Array8iteratordeEv(&it) == _ZNK3sce4Json5Array4backEv(&array));
+    Require(_ZN3sce4Json5Array8iteratoraSERKS2_(&it, &end) == &it);
+    Require(!_ZNK3sce4Json5Array8iteratorneERKS2_(&it, &end));
+    _ZN3sce4Json5Array8iteratorD1Ev(&it);
+    Require(guarded.before == 0x123456789ABCDEF0ull && guarded.after == 0xFEDCBA9876543210ull);
+    _ZN3sce4Json5Array8iteratorD1Ev(&end);
+    _ZN3sce4Json5Array8iteratorD1Ev(&begin);
+    _ZN3sce4Json5ArrayD1Ev(&array);
+
+    String key{}, other{};
+    _ZN3sce4Json6StringC1EPKc(&key, "key");
+    _ZN3sce4Json6StringC1EPKc(&other, "other");
+    Value value{};
+    _ZN3sce4Json5ValueC1El(&value, 7);
+    Pair pair{};
+    pair.reserved = 0xFFFFFFFFFFFFFFFFull;
+    _ZN3sce4Json6Object4PairC1ERKNS0_6StringERKNS0_5ValueE(&pair, &key, &value);
+    Require(pair.reserved == 0);
+    Require(pair.key.text != key.text);
+    Require(pair.value.node != value.node);
+    _ZN3sce4Json6StringaSERKS1_(&key, &other);
+    Require(std::strcmp(_ZNK3sce4Json6String5c_strEv(&pair.key), "key") == 0);
+    Require(_ZN3sce4Json5Value3setEl(&value, 9) == 0);
+    Require(_ZNK3sce4Json5Value7getTypeEv(&pair.value) == TypeInteger);
+    Require(*_ZNK3sce4Json5Value10getIntegerEv(&pair.value) == 7);
+    _ZN3sce4Json5ValueD1Ev(&value);
+    _ZN3sce4Json6StringD1Ev(&key);
+    _ZN3sce4Json6StringD1Ev(&other);
+    Require(std::strcmp(_ZNK3sce4Json6String5c_strEv(&pair.key), "key") == 0);
+    Require(*_ZNK3sce4Json5Value10getIntegerEv(&pair.value) == 7);
+    _ZN3sce4Json6Object4PairD1Ev(&pair);
+    Require(pair.key.text == nullptr && pair.value.node == nullptr);
+
+    _ZN3sce4Json6StringC1EPKc(&key, "invalid-value");
+    Value unconstructed{};
+    pair.reserved = 123;
+    bool rejected = false;
+    try {
+        _ZN3sce4Json6Object4PairC1ERKNS0_6StringERKNS0_5ValueE(&pair, &key, &unconstructed);
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    Require(rejected && pair.reserved == 123 && pair.key.text == nullptr && pair.value.node == nullptr);
+    _ZN3sce4Json6StringD1Ev(&key);
+
+    for (const char* document : {"null", "true", "123", "2.5", "\"text\"", "[1,{\"a\":[true,\"x\"]}]"}) {
+        _ZN3sce4Json6StringC1EPKc(&key, "");
+        _ZN3sce4Json5ValueC1Ev(&value);
+        Require(_ZN3sce4Json6Parser5parseERNS0_5ValueEPKcm(&value, document, std::strlen(document)) == 0);
+        struct GuardedPair {
+            std::uint64_t before = 0xA5A5A5A5A5A5A5A5ull;
+            Pair pair{};
+            std::uint64_t after = 0x5A5A5A5A5A5A5A5Aull;
+        } copy;
+        _ZN3sce4Json6Object4PairC1ERKNS0_6StringERKNS0_5ValueE(&copy.pair, &key, &value);
+        _ZN3sce4Json5ValueD1Ev(&value);
+        _ZN3sce4Json6StringD1Ev(&key);
+        Require(Serialize(copy.pair.value) == document);
+        Require(std::strcmp(_ZNK3sce4Json6String5c_strEv(&copy.pair.key), "") == 0);
+        _ZN3sce4Json6Object4PairD1Ev(&copy.pair);
+        Require(copy.pair.key.text == nullptr && copy.pair.value.node == nullptr);
+        Require(copy.before == 0xA5A5A5A5A5A5A5A5ull && copy.after == 0x5A5A5A5A5A5A5A5Aull);
+    }
+}
+
 int main() {
     ParseAndRoundTrip();
     NestingDepth();
@@ -622,4 +722,5 @@ int main() {
     InitParameters();
     ValueClear();
     StreamParse();
+    IteratorAssignmentAndPair();
 }
