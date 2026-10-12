@@ -1,9 +1,11 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include "tests/ModuleChecks.hpp"
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 
 extern "C" {
@@ -21,16 +23,8 @@ int APS5_VABI sceOpusDecDestroy(void*);
 
 namespace {
 
-void Require(bool value) { if (!value) std::abort(); }
-
-template <typename TFunction>
-void RequireThrows(TFunction function, const char* reason = nullptr) {
-    try { function(); } catch (const std::runtime_error& error) {
-        Require(!reason || std::strstr(error.what(), reason));
-        return;
-    }
-    std::abort();
-}
+using ModuleTest::Require;
+using ModuleTest::RequireThrows;
 
 const std::uint8_t CELT_STEREO[] = {
     0x3C, 0x00, 0xFC, 0xB5, 0x1F, 0xBC, 0xC8, 0xCA, 0x0B, 0xC2, 0x18, 0x1A, 0xFB, 0xDB, 0x3E, 0x2B, 0x6B, 0x0A, 0x67, 0x71, 0x25, 0x2F, 0x57, 0x2E,
@@ -47,12 +41,23 @@ const std::uint8_t CELT_STEREO[] = {
 
 int main() {
     std::uint32_t context = 0, otherContext = 0;
+    RequireThrows([] { sceOpusCeltDecInitialize(nullptr); }, "null context output");
+    RequireThrows([] { sceOpusCeltDecTerminate(nullptr); }, "null context");
+    RequireThrows([&] { sceOpusCeltDecTerminate(&context); }, "unknown context");
+    for (int channels : {-1, 0, 3, std::numeric_limits<int>::max()})
+        RequireThrows([&] { sceOpusCeltDecGetSize(channels); }, "only mono and stereo");
     Require(sceOpusCeltDecInitialize(&context) == 0);
     Require(sceOpusCeltDecInitialize(&otherContext) == 0 && context != otherContext);
     RequireThrows([&] { sceOpusCeltDecInitialize(&context); });
     Require(sceOpusCeltDecGetSize(1) == 640 && sceOpusCeltDecGetSize(2) == 640);
     RequireThrows([&] { sceOpusCeltDecGetSize(3); });
     std::array<std::uint8_t, 640> state{}, otherState{}, monoState{}, unsupported{};
+    const std::uint32_t savedContext = context;
+    std::uint32_t unknownContext = 0;
+    RequireThrows([&] { sceOpusCeltDecCreateEx(nullptr, state.data(), 48000, 2); }, "null context or state");
+    RequireThrows([&] { sceOpusCeltDecCreateEx(&context, nullptr, 48000, 2); }, "null context or state");
+    RequireThrows([&] { sceOpusCeltDecCreateEx(&unknownContext, state.data(), 48000, 2); }, "unknown context");
+    Require(context == savedContext && unknownContext == 0);
     Require(sceOpusCeltDecCreateEx(&context, state.data(), 48000, 2) == 0);
     Require(sceOpusCeltDecCreateEx(&otherContext, otherState.data(), 48000, 2) == 0);
     Require(sceOpusCeltDecCreateEx(&context, monoState.data(), 48000, 1) == 0);
@@ -62,6 +67,11 @@ int main() {
     RequireThrows([&] { sceOpusCeltDecTerminate(&context); });
     std::array<std::int16_t, 1922> pcm{}, reference{};
     pcm.fill(12345);
+    for (int bytes : {-1, 0, std::numeric_limits<int>::max()})
+        RequireThrows([&] { sceOpusCeltDecDecode(state.data(), CELT_STEREO + 2, bytes, pcm.data() + 1, 3840); }, "invalid packet or PCM buffer");
+    RequireThrows([&] { sceOpusCeltDecDecode(state.data(), CELT_STEREO + 2, 60, nullptr, 3840); }, "invalid packet or PCM buffer");
+    RequireThrows([&] { sceOpusCeltDecDecode(state.data(), CELT_STEREO + 2, 60, pcm.data() + 1, -1); }, "invalid packet or PCM buffer");
+    RequireThrows([&] { sceOpusCeltDecDecode(nullptr, CELT_STEREO + 2, 60, pcm.data() + 1, 3840); }, "unknown decoder state");
     const std::uint8_t silk[] = {0x0C, 0x00};
     const std::uint8_t hybrid[] = {0x7C, 0x00};
     const std::uint8_t truncatedCount[] = {0xFF};
@@ -134,4 +144,16 @@ int main() {
     RequireThrows([&] { sceOpusCeltDecCreateEx(&context, state.data(), 48000, 2); });
     Require(sceOpusCeltDecDestroy(otherState.data()) == 0);
     Require(sceOpusCeltDecTerminate(&otherContext) == 0);
+    for (int cycle = 0; cycle < 16; ++cycle) {
+        std::uint32_t recycled = 0;
+        Require(sceOpusCeltDecInitialize(&recycled) == 0);
+        Require(sceOpusCeltDecCreateEx(&recycled, state.data(), 48000, 2) == 0);
+        pcm.fill(12345);
+        Require(sceOpusCeltDecDecode(state.data(), CELT_STEREO + 2, 60, pcm.data() + 1, 3840) == 3840);
+        Require(pcm.front() == 12345 && pcm.back() == 12345);
+        if (cycle == 0) reference = pcm;
+        else Require(reference == pcm);
+        Require(sceOpusCeltDecDestroy(state.data()) == 0);
+        Require(sceOpusCeltDecTerminate(&recycled) == 0);
+    }
 }
