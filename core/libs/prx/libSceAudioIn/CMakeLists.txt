@@ -11,6 +11,7 @@ if(BUILD_TESTING)
     configure_windows_unwind(guest_audio_in_tests)
     add_test(NAME guest_audio_in_capture COMMAND guest_audio_in_tests capture)
     add_test(NAME guest_audio_in_no_device COMMAND guest_audio_in_tests none)
+    set_tests_properties(guest_audio_in_capture guest_audio_in_no_device PROPERTIES LABELS "module-functional;module:libSceAudioIn" TIMEOUT 20)
     if(WIN32)
         set_tests_properties(guest_audio_in_capture guest_audio_in_no_device PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceAudioIn>")

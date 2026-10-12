@@ -10,6 +10,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <thread>
 
 extern "C" {
 int APS5_VABI sceAudioInInit();
@@ -19,6 +21,7 @@ int APS5_VABI sceAudioInAsyncOpen(int, std::uint32_t, std::uint32_t, std::uint32
 int APS5_VABI sceAudioInInput(int, void*);
 int APS5_VABI sceAudioInGetSilentState(int);
 int APS5_VABI sceAudioInClose(int);
+int APS5_VABI sceAudioInIsPadEmbeddedMic(int);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -85,6 +88,7 @@ void TestCapture() {
     TestValidation();
     const int handle = sceAudioInOpen(user, 0, 0, 256, 48000, 2);
     Require(handle > 0 && sceAudioInGetSilentState(handle) == 0);
+    Require(sceAudioInIsPadEmbeddedMic(handle) == 0);
     std::vector<std::int16_t> block(256 * 2 + 1, 0x5555);
     std::vector<std::int16_t> captured;
     for (int i = 0; i < 4; ++i) {
@@ -96,8 +100,10 @@ void TestCapture() {
     Require(sceAudioInInput(handle, block.data()) == 256);
     for (std::size_t i = 0; i < 256 * 2; ++i) Require(block[i] == 0);
     Require(sceAudioInClose(handle) == 0);
+    Require(sceAudioInIsPadEmbeddedMic(handle) == static_cast<int>(0x80260101));
     const int async = sceAudioInAsyncOpen(user, 0, 0, 256, 48000, 2);
     Require(async == handle && sceAudioInGetSilentState(async) == 0);
+    Require(sceAudioInIsPadEmbeddedMic(async) == 0);
     Require(sceAudioInInput(async, block.data()) == 256);
     Require(std::equal(block.begin(), block.end() - 1, recorded.begin()) && block.back() == 0x5555);
     Require(sceAudioInClose(async) == 0);
@@ -110,9 +116,13 @@ void TestNoDevice() {
     SetEnvironment("SDL_AUDIODRIVER", "none");
 
     TestValidation();
+    Require(sceAudioInIsPadEmbeddedMic(0) == invalidHandle);
+    Require(sceAudioInIsPadEmbeddedMic(-1) == invalidHandle);
     const int handle = sceAudioInOpen(user, 0, 0, 256, 16000, 0x12);
     Require(handle > 0 && sceAudioInGetSilentState(handle) == 1);
+    Require(sceAudioInIsPadEmbeddedMic(handle) == 0);
     Require(sceAudioInGetSilentState(handle + 1) == invalidHandle);
+    Require(sceAudioInIsPadEmbeddedMic(handle + 1) == invalidHandle);
     Require(sceAudioInInput(handle + 1, nullptr) == invalidHandle);
     std::vector<std::uint8_t> buffer(256 * 8 + 1, 0xCC);
     const auto start = std::chrono::steady_clock::now();
@@ -126,6 +136,7 @@ void TestNoDevice() {
     const int async = sceAudioInAsyncOpen(user, 1, 0, 256, 16000, 0x11);
     Require(hq > 0 && async > 0 && hq != handle && async != handle && hq != async);
     Require(sceAudioInGetSilentState(hq) == 1 && sceAudioInGetSilentState(async) == 1);
+    Require(sceAudioInIsPadEmbeddedMic(hq) == 0 && sceAudioInIsPadEmbeddedMic(async) == 0);
     std::fill(buffer.begin(), buffer.end(), 0xCC);
     Require(sceAudioInInput(hq, buffer.data()) == 128);
     for (std::size_t i = 0; i < 128 * 4; ++i) Require(buffer[i] == 0);
@@ -142,14 +153,37 @@ void TestNoDevice() {
     Require(sceAudioInClose(hq) == 0);
     Require(sceAudioInClose(hq) == invalidHandle);
     Require(sceAudioInGetSilentState(hq) == invalidHandle);
+    Require(sceAudioInIsPadEmbeddedMic(hq) == invalidHandle);
     Require(sceAudioInAsyncOpen(user, 0, 0, 128, 48000, 2) == hq);
     Require(sceAudioInClose(async) == 0);
     Require(sceAudioInInput(async, buffer.data()) == invalidHandle);
+    Require(sceAudioInIsPadEmbeddedMic(async) == invalidHandle);
     Require(sceAudioInHqOpen(user, 1, 0, 128, 48000, 0x12) == async);
     Require(sceAudioInClose(handle) == 0);
     Require(sceAudioInClose(handle) == invalidHandle);
     Require(sceAudioInInput(handle, buffer.data()) == invalidHandle);
+    Require(sceAudioInIsPadEmbeddedMic(handle) == invalidHandle);
     Require(sceAudioInOpen(user, 1, 0, 128, 48000, 0x11) == handle);
+    for (int port = 1; port <= 8; ++port) {
+        Require(sceAudioInIsPadEmbeddedMic(port) == 0);
+        Require(sceAudioInClose(port) == 0);
+        Require(sceAudioInIsPadEmbeddedMic(port) == invalidHandle);
+    }
+    for (const int invalid : {INT32_MIN, -1, 0, 9, INT32_MAX}) Require(sceAudioInIsPadEmbeddedMic(invalid) == invalidHandle);
+    const int active = sceAudioInOpen(user, 0, 0, 128, 48000, 1);
+    Require(active > 0);
+    std::atomic<bool> ready = false;
+    std::thread reader([&] {
+        ready.store(true);
+        for (int i = 0; i < 1000; ++i) {
+            const int result = sceAudioInIsPadEmbeddedMic(active);
+            Require(result == 0 || result == invalidHandle);
+        }
+    });
+    while (!ready.load()) std::this_thread::yield();
+    Require(sceAudioInClose(active) == 0);
+    reader.join();
+    Require(sceAudioInIsPadEmbeddedMic(active) == invalidHandle);
 }
 
 }
