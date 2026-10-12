@@ -9,6 +9,7 @@ if(BUILD_TESTING)
     target_link_libraries(guest_np_web_api2_tests PRIVATE libSceNpWebApi2 libkernel libc)
     configure_windows_unwind(guest_np_web_api2_tests)
     add_test(NAME guest_np_web_api2 COMMAND guest_np_web_api2_tests)
+    set_tests_properties(guest_np_web_api2 PROPERTIES TIMEOUT 30 LABELS "module-functional;module:libSceNpWebApi2")
     if(WIN32)
         set_tests_properties(guest_np_web_api2 PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceNpWebApi2>")

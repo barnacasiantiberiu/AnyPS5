@@ -9,7 +9,10 @@
 
 // The PSN web API has no service behind it: handles can be created, but requests fail.
 static constexpr int SCE_NP_WEBAPI2_ERROR_INVALID_ARGUMENT = static_cast<int>(0x80553402);
+static constexpr int SCE_NP_WEBAPI2_ERROR_LIB_CONTEXT_NOT_FOUND = static_cast<int>(0x80553404);
 static constexpr int SCE_NP_WEBAPI2_ERROR_UNAVAILABLE = static_cast<int>(0x80553406);
+static constexpr int SCE_NP_WEBAPI2_ERROR_ABORTED = static_cast<int>(0x80553409);
+static constexpr int SCE_NP_WEBAPI2_ERROR_HANDLE_NOT_FOUND = static_cast<int>(0x8055340D);
 static std::atomic<int> g_nextHandle{1};
 
 struct NpWebApi2MemoryPoolStats {
@@ -19,8 +22,22 @@ struct NpWebApi2MemoryPoolStats {
     int32_t reserved;
 };
 
+struct NpWebApi2PushEventHandle {
+    int libCtxId;
+    bool aborted;
+};
+
 static std::mutex g_poolsMutex;
 static std::unordered_map<int, size_t> g_pools;
+static std::unordered_map<int, NpWebApi2PushEventHandle> g_pushEventHandles;
+
+static int FindPushEventHandle(int libCtxId, int handleId, NpWebApi2PushEventHandle*& handle) {
+    if (!g_pools.contains(libCtxId)) return SCE_NP_WEBAPI2_ERROR_LIB_CONTEXT_NOT_FOUND;
+    const auto found = g_pushEventHandles.find(handleId);
+    if (found == g_pushEventHandles.end() || found->second.libCtxId != libCtxId) return SCE_NP_WEBAPI2_ERROR_HANDLE_NOT_FOUND;
+    handle = &found->second;
+    return 0;
+}
 
 extern "C" {
 
@@ -104,30 +121,38 @@ int APS5_VABI sceNpWebApi2GetMemoryPoolStats(int lib_ctx_id, NpWebApi2MemoryPool
 }
 
 int APS5_VABI sceNpWebApi2PushEventCreateFilter(int lib_ctx_id, int handle_id, const char* np_service_name, uint32_t np_service_label, const void* filter_param, size_t filter_param_num) {
-    (void)lib_ctx_id;
-    (void)handle_id;
     (void)np_service_name;
     (void)np_service_label;
     (void)filter_param;
     (void)filter_param_num;
+    std::lock_guard lock(g_poolsMutex);
+    NpWebApi2PushEventHandle* handle = nullptr;
+    if (const int result = FindPushEventHandle(lib_ctx_id, handle_id, handle); result != 0) return result;
+    if (handle->aborted) return SCE_NP_WEBAPI2_ERROR_ABORTED;
     return g_nextHandle.fetch_add(1, std::memory_order_relaxed);
 }
 
 int APS5_VABI sceNpWebApi2PushEventCreateHandle(int lib_ctx_id) {
-    (void)lib_ctx_id;
-    return g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard lock(g_poolsMutex);
+    if (!g_pools.contains(lib_ctx_id)) return SCE_NP_WEBAPI2_ERROR_LIB_CONTEXT_NOT_FOUND;
+    const int handle_id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+    g_pushEventHandles[handle_id] = {lib_ctx_id, false};
+    return handle_id;
 }
 
 int APS5_VABI sceNpWebApi2PushEventAbortHandle(int libCtxId, int handleId) {
-    (void)libCtxId;
-    (void)handleId;
-    NotImplemented_nid_no_patch(__func__);
+    std::lock_guard lock(g_poolsMutex);
+    NpWebApi2PushEventHandle* handle = nullptr;
+    if (const int result = FindPushEventHandle(libCtxId, handleId, handle); result != 0) return result;
+    handle->aborted = true;
     return 0;
 }
 
 int APS5_VABI sceNpWebApi2PushEventDeleteHandle(int lib_ctx_id, int handle_id) {
-    (void)lib_ctx_id;
-    (void)handle_id;
+    std::lock_guard lock(g_poolsMutex);
+    NpWebApi2PushEventHandle* handle = nullptr;
+    if (const int result = FindPushEventHandle(lib_ctx_id, handle_id, handle); result != 0) return result;
+    g_pushEventHandles.erase(handle_id);
     return 0;
 }
 
@@ -163,6 +188,7 @@ int APS5_VABI sceNpWebApi2SendRequest(int64_t request_id, const void* data, size
 int APS5_VABI sceNpWebApi2Terminate(int lib_ctx_id) {
     std::lock_guard lock(g_poolsMutex);
     g_pools.erase(lib_ctx_id);
+    std::erase_if(g_pushEventHandles, [&](const auto& handle) { return handle.second.libCtxId == lib_ctx_id; });
     return 0;
 }
 
