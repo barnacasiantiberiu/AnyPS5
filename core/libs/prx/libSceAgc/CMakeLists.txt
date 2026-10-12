@@ -74,6 +74,7 @@ if(BUILD_TESTING)
     set_target_properties(agc_command_tests PROPERTIES EXCLUDE_FROM_ALL OFF)
     add_test(NAME agc_initialization COMMAND agc_command_tests defaults)
     add_test(NAME agc_commands COMMAND agc_command_tests)
+    set_tests_properties(agc_commands PROPERTIES LABELS "module-functional;module:libSceAgc" TIMEOUT 20)
     if(WIN32)
         set_tests_properties(agc_initialization agc_commands PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")

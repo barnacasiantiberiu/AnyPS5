@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <string>
+#include <vector>
 
 extern "C" std::uint32_t* APS5_VABI sceAgcDcbResetQueue(CommandBuffer* buf, std::uint32_t op, std::uint32_t state);
 extern "C" std::uint32_t* APS5_VABI sceAgcDcbClearState(CommandBuffer* buf, std::uint32_t command);
@@ -43,6 +44,11 @@ extern "C" std::uint32_t* APS5_VABI sceAgcDcbSetBaseIndirectArgs(CommandBuffer* 
 extern "C" std::uint32_t* APS5_VABI sceAgcSetNop(CommandBuffer* buf, std::uint32_t sizeDw);
 extern "C" int APS5_VABI sceAgcDebugRaiseException(std::uint32_t exceptionId);
 extern "C" std::uint32_t* APS5_VABI sceAgcAcbAtomicGds_0900(CommandBuffer* buf, std::uint32_t control, std::uint32_t mode, std::uint32_t gdsOp, std::uint32_t src, std::uint16_t offset, std::uint16_t index, std::uint32_t mask, std::uint32_t data, std::uint64_t compareData, std::uint64_t extraData);
+
+extern "C" std::uint32_t* APS5_VABI sceAgcDcbPushMarkerSpan(CommandBuffer* buf, const char* str, std::uint32_t length, std::uint32_t color);
+extern "C" std::uint32_t* APS5_VABI sceAgcDcbSetMarkerSpan(CommandBuffer* buf, const char* str, std::uint32_t length, std::uint32_t color);
+extern "C" std::uint32_t* APS5_VABI sceAgcAcbPushMarkerSpan(CommandBuffer* buf, const char* str, std::uint32_t length, std::uint32_t color);
+extern "C" std::uint32_t* APS5_VABI sceAgcAcbSetMarkerSpan(CommandBuffer* buf, const char* str, std::uint32_t length, std::uint32_t color);
 
 namespace {
 
@@ -242,6 +248,71 @@ void testWorkloads() {
     check(sceAgcDcbSetWorkloadComplete(nullptr, 1, 3) == nullptr, "null command buffer accepted for complete");
     check(sceAgcDriverUnregisterWorkloadStream(1) == 0, "workload stream unregistration failed");
     check(sceAgcDcbSetWorkloadComplete(&dcb.buffer, 1, 3) == nullptr, "workload complete packet after unregistration");
+}
+
+void testMarkerSpans() {
+    Storage dcb;
+    Storage acb;
+    const char text[] = "framework";
+    const auto* dcbPush = sceAgcDcbPushMarkerSpan(&dcb.buffer, text, 5, 0xff0000u);
+    const auto* acbPush = sceAgcAcbPushMarkerSpan(&acb.buffer, text, 5, 0x00ff00u);
+    check(acbPush == acb.words.data() && acbPush[0] == Agc::Command::Header(0x10, 3, 0x0bu << 2u), "ACB push marker span header mismatch");
+    check(std::strcmp(reinterpret_cast<const char*>(acbPush + 1), "frame") == 0, "ACB push marker span text was not cut at its length");
+    const auto* acbWhole = sceAgcAcbPushMarkerSpan(&acb.buffer, "four", 4, 0);
+    check(acbWhole == acb.words.data() + 3 && acbWhole[0] == Agc::Command::Header(0x10, 3, 0x0bu << 2u) && acbWhole[2] == 0, "marker span of a whole dword has no terminator");
+    sceAgcDcbPushMarkerSpan(&dcb.buffer, "four", 4, 0);
+    const auto* acbSet = sceAgcAcbSetMarkerSpan(&acb.buffer, nullptr, 0, 0);
+    const auto* dcbSet = sceAgcDcbSetMarkerSpan(&dcb.buffer, nullptr, 0, 0);
+    check(acbSet == acb.words.data() + 6 && dcbSet == dcb.words.data() + 6, "set marker span did not return its push packet");
+    check(acbSet[0] == Agc::Command::Header(0x10, 2, 0x0bu << 2u) && acbSet[1] == 0 && acbSet[2] == Agc::Command::Header(0x10, 2, 0x0cu << 2u), "ACB set marker span is not a push and pop pair");
+    check(dcbPush == dcb.words.data() && dcb.words == acb.words, "ACB and DCB marker spans differ");
+    check(acb.buffer.cursor_up == acb.words.data() + 10, "incorrect ACB marker span cursor advance");
+    Storage named;
+    sceAgcDcbPushMarker(&named.buffer, "frame", 0);
+    Storage spanned;
+    sceAgcDcbPushMarkerSpan(&spanned.buffer, "frame", 5, 0);
+    check(named.words == spanned.words, "marker span differs from the marker of the same text");
+    const auto before = acb.words;
+    expectFailure([&] { sceAgcAcbPushMarkerSpan(&acb.buffer, nullptr, 1, 0); });
+    expectFailure([&] { sceAgcDcbSetMarkerSpan(&acb.buffer, text, 0x10000u, 0); });
+    expectFailure([] { sceAgcAcbSetMarkerSpan(nullptr, "frame", 5, 0); });
+    check(acb.words == before && acb.buffer.cursor_up == acb.words.data() + 10, "invalid marker span modified the command buffer");
+}
+
+
+void testMarkerSpanBoundaries() {
+    for (auto push : {sceAgcDcbPushMarkerSpan, sceAgcAcbPushMarkerSpan}) {
+        for (const std::uint32_t length : {0u, 1u, 3u, 4u, 7u, 8u, 65535u}) {
+            std::vector<char> text(length, 'x');
+            if (length > 3) text[1] = '\0';
+            const auto count = (length + 4) / 4 + 1;
+            std::vector<std::uint32_t> words(count + 2, 0xdeadbeef);
+            CommandBuffer buffer{words.data() + 1, words.data() + count + 1, words.data() + 1, words.data() + count + 1, nullptr, nullptr, 0};
+            const auto* packet = push(&buffer, text.data(), length, 0xffffffffu);
+            check(packet == words.data() + 1 && packet[0] == (0xc000102cu | ((count - 2) << 16)), "span header or return pointer mismatch");
+            const auto* bytes = reinterpret_cast<const char*>(packet + 1);
+            check(std::equal(text.begin(), text.end(), bytes), "span text was truncated or changed");
+            check(std::all_of(bytes + length, bytes + (count - 1) * 4, [](char value) { return value == 0; }), "span padding is not zero");
+            check(words.front() == 0xdeadbeef && words.back() == 0xdeadbeef && buffer.cursor_up == buffer.top, "span exceeded its buffer");
+        }
+        Storage storage;
+        const auto before = storage.words;
+        expectFailure([&] { push(&storage.buffer, "x", UINT32_MAX, 0); });
+        check(storage.words == before && storage.buffer.cursor_up == storage.buffer.bottom, "oversized span changed storage");
+    }
+    for (auto set : {sceAgcDcbSetMarkerSpan, sceAgcAcbSetMarkerSpan}) {
+        Storage storage;
+        storage.words.fill(0xdeadbeef);
+        storage.buffer.cursor_down = storage.words.data() + 3;
+        const auto before = storage.words;
+        expectFailure([&] { set(&storage.buffer, "four", 4, 0); });
+        check(storage.words == before && storage.buffer.cursor_up == storage.buffer.bottom, "exhausted set emitted a partial marker");
+        storage.buffer.callback = grow;
+        storage.buffer.user_data = &storage;
+        const auto* packet = set(&storage.buffer, "four", 4, 0);
+        check(packet == storage.words.data() && packet[0] == 0xc001102cu && packet[3] == 0xc0001030u && packet[4] == 0, "grown set packet mismatch");
+        check(storage.buffer.cursor_up == storage.words.data() + 5 && storage.words[5] == 0xdeadbeef, "grown set cursor or guard mismatch");
+    }
 }
 
 void testIndexBuffer() {
@@ -595,6 +666,8 @@ int main(int argc, char** argv) {
         testClearState();
         testIndexedIndirectDraws();
         testMarkers();
+        testMarkerSpans();
+        testMarkerSpanBoundaries();
         testWorkloads();
         testIndexBuffer();
         testIndirectBase();
