@@ -1,9 +1,11 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include "tests/ModuleChecks.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <stdexcept>
 
 extern "C" {
@@ -17,13 +19,8 @@ int APS5_VABI sceOpusDecDestroy(void*);
 
 namespace {
 
-void Require(bool value) { if (!value) std::abort(); }
-
-template <typename TFunction>
-void RequireThrows(TFunction function) {
-    try { function(); } catch (const std::runtime_error&) { return; }
-    std::abort();
-}
+using ModuleTest::Require;
+using ModuleTest::RequireThrows;
 
 const std::uint8_t OPUS_STEREO[] = {
     0x46, 0x00, 0x7C, 0x87, 0xFC, 0xB1, 0x1D, 0xC0, 0xE3, 0x07, 0xD5, 0x9C, 0x4D, 0x91, 0x62, 0x6B, 0x73, 0x86, 0x05, 0xE8, 0xDB, 0xC6, 0x23, 0x6D,
@@ -44,11 +41,22 @@ const std::uint8_t OPUS_STEREO[] = {
 
 int main() {
     std::uint32_t context = 0, otherContext = 0;
+    RequireThrows([] { sceOpusDecInitialize(nullptr); }, "null context output");
+    RequireThrows([] { sceOpusDecTerminate(nullptr); }, "null context");
+    RequireThrows([&] { sceOpusDecTerminate(&context); }, "unknown context");
+    for (int channels : {-1, 0, 3, std::numeric_limits<int>::max()})
+        RequireThrows([&] { sceOpusDecGetSize(channels); }, "only mono and stereo");
     Require(sceOpusDecInitialize(&context) == 0);
     Require(sceOpusDecInitialize(&otherContext) == 0 && context != otherContext);
     RequireThrows([&] { sceOpusDecInitialize(&context); });
     Require(sceOpusDecGetSize(1) == 640 && sceOpusDecGetSize(2) == 640);
     std::array<std::uint8_t, 640> state{}, otherState{}, monoState{};
+    const std::uint32_t savedContext = context;
+    std::uint32_t unknownContext = 0;
+    RequireThrows([&] { sceOpusDecCreateEx(nullptr, state.data(), 48000, 2); }, "null context or state");
+    RequireThrows([&] { sceOpusDecCreateEx(&context, nullptr, 48000, 2); }, "null context or state");
+    RequireThrows([&] { sceOpusDecCreateEx(&unknownContext, state.data(), 48000, 2); }, "unknown context");
+    Require(context == savedContext && unknownContext == 0);
     Require(sceOpusDecCreateEx(&context, state.data(), 48000, 2) == 0);
     Require(sceOpusDecCreateEx(&otherContext, otherState.data(), 48000, 2) == 0);
     Require(sceOpusDecCreateEx(&context, monoState.data(), 48000, 1) == 0);
@@ -60,6 +68,11 @@ int main() {
         RequireThrows([&] { sceOpusDecCreateEx(&context, unsupported.data(), rate, 2); });
     std::array<std::int16_t, 1922> pcm{}, reference{};
     pcm.fill(12345);
+    for (int bytes : {-1, 0, std::numeric_limits<int>::max()})
+        RequireThrows([&] { sceOpusDecDecode(state.data(), OPUS_STEREO + 2, bytes, pcm.data() + 1, 3840); }, "invalid packet or PCM buffer");
+    RequireThrows([&] { sceOpusDecDecode(state.data(), OPUS_STEREO + 2, 70, nullptr, 3840); }, "invalid packet or PCM buffer");
+    RequireThrows([&] { sceOpusDecDecode(state.data(), OPUS_STEREO + 2, 70, pcm.data() + 1, -1); }, "invalid packet or PCM buffer");
+    RequireThrows([&] { sceOpusDecDecode(nullptr, OPUS_STEREO + 2, 70, pcm.data() + 1, 3840); }, "unknown decoder state");
     RequireThrows([&] { sceOpusDecDecode(state.data(), OPUS_STEREO + 2, 70, pcm.data() + 1, 3839); });
     Require(std::all_of(pcm.begin(), pcm.end(), [](auto value) { return value == 12345; }));
     const std::uint8_t malformed[] = {0x7f};
@@ -111,4 +124,16 @@ int main() {
     Require(sceOpusDecDecode(otherState.data(), OPUS_STEREO + offset + 2, OPUS_STEREO[offset], reference.data(), 3840) == 3840);
     Require(sceOpusDecDestroy(otherState.data()) == 0);
     Require(sceOpusDecTerminate(&otherContext) == 0);
+    for (int cycle = 0; cycle < 16; ++cycle) {
+        std::uint32_t recycled = 0;
+        Require(sceOpusDecInitialize(&recycled) == 0);
+        Require(sceOpusDecCreateEx(&recycled, state.data(), 48000, 2) == 0);
+        pcm.fill(12345);
+        Require(sceOpusDecDecode(state.data(), OPUS_STEREO + 2, 70, pcm.data() + 1, 3840) == 3840);
+        Require(pcm.front() == 12345 && pcm.back() == 12345);
+        if (cycle == 0) reference = pcm;
+        else Require(reference == pcm);
+        Require(sceOpusDecDestroy(state.data()) == 0);
+        Require(sceOpusDecTerminate(&recycled) == 0);
+    }
 }
