@@ -1,6 +1,8 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/Shutdown.hpp"
 #include "tests/VideoOutTestEnvironment.hpp"
+#include <array>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -10,6 +12,7 @@ extern "C" {
 int APS5_VABI sceVideoOutOpen(int userId, int busType, int index, const void* param);
 int APS5_VABI sceVideoOutClose(int handle);
 int APS5_VABI sceVideoOutGetOutputStatus(int handle, VideoOutOutputStatus* status);
+int APS5_VABI sceVideoOutGetOutputStatusWithVrr(int handle, void* status);
 int APS5_VABI sceVideoOutGetResolutionStatus(int handle, VideoOutResolutionStatus* status);
 }
 
@@ -51,6 +54,21 @@ int main() {
     VideoOutOutputStatus output{};
     Require(sceVideoOutGetOutputStatus(handle, &output) == 0);
     Require(status.refreshRate == output.refreshRate);
+    Require(output.resolution == 1 && output.dynamicRange == 1 && output.refreshRate == 3 && output.flags == 0);
+
+    std::array<std::byte, 98> vrr;
+    vrr.fill(std::byte{0xff});
+    Require(sceVideoOutGetOutputStatusWithVrr(handle, vrr.data() + 1) == 0);
+    Require(vrr[0] == std::byte{0xff});
+    Require(std::memcmp(vrr.data() + 1, &output, sizeof(output)) == 0);
+    for (std::size_t offset = 25; offset < 81; ++offset) Require(vrr[offset] == std::byte{0});
+    for (std::size_t offset = 81; offset < vrr.size(); ++offset) Require(vrr[offset] == std::byte{0xff});
+    vrr.fill(std::byte{0xff});
+    Require(sceVideoOutGetOutputStatusWithVrr(handle, nullptr) == static_cast<int>(0x80290002u));
+    Require(sceVideoOutGetOutputStatusWithVrr(-1, nullptr) == static_cast<int>(0x80290002u));
+    Require(sceVideoOutGetOutputStatusWithVrr(NEVER_OPENED_HANDLE, vrr.data()) == static_cast<int>(0x8029000Bu));
+    Require(sceVideoOutGetOutputStatusWithVrr(-1, vrr.data()) == static_cast<int>(0x8029000Bu));
+    for (const auto byte : vrr) Require(byte == std::byte{0xff});
 
     Require(Rejects(handle, nullptr));
     Require(Rejects(0, &status));
@@ -59,5 +77,13 @@ int main() {
 
     Require(sceVideoOutClose(handle) == 0);
     Require(Rejects(handle, &status));
+    Require(sceVideoOutGetOutputStatusWithVrr(handle, vrr.data()) == static_cast<int>(0x8029000Bu));
+    for (const auto byte : vrr) Require(byte == std::byte{0xff});
+    handle = sceVideoOutOpen(SYSTEM_USER, MAIN_BUS, 0, nullptr);
+    Require(handle > 0);
+    Require(sceVideoOutGetOutputStatusWithVrr(handle, vrr.data() + 1) == 0);
+    Require(std::memcmp(vrr.data() + 1, &output, sizeof(output)) == 0);
+    Require(vrr[0] == std::byte{0xff} && vrr[81] == std::byte{0xff});
+    Require(sceVideoOutClose(handle) == 0);
     LibcRunShutdown_nid_postfix();
 }

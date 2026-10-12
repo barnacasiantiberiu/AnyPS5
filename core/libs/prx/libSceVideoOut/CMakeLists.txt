@@ -101,6 +101,8 @@ if(BUILD_TESTING)
     configure_windows_unwind(guest_video_out_resolution_status_tests)
     add_test(NAME guest_video_out_resolution_status COMMAND guest_video_out_resolution_status_tests)
     set_tests_properties(guest_video_out_resolution_status PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77 RESOURCE_LOCK videoout_app0)
+    set_tests_properties(guest_video_out_resolution_status PROPERTIES
+        LABELS "module-functional;module:libSceVideoOut" ENVIRONMENT "ANYPS5_REQUIRE_DISPLAY=1")
     if(WIN32)
         set_tests_properties(guest_video_out_resolution_status PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
