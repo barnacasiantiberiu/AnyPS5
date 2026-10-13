@@ -592,6 +592,7 @@ configure_windows_unwind(agc_denormal_flush_elimination_tests)
 if(BUILD_TESTING)
     set_target_properties(agc_denormal_flush_elimination_tests PROPERTIES EXCLUDE_FROM_ALL OFF)
     add_test(NAME agc_denormal_flush_elimination COMMAND agc_denormal_flush_elimination_tests)
+    set_tests_properties(agc_denormal_flush_elimination PROPERTIES TIMEOUT 30 LABELS "module-functional;module:libSceAgcDriver")
     if(WIN32)
         set_tests_properties(agc_denormal_flush_elimination PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")

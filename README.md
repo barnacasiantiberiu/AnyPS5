@@ -42,6 +42,8 @@ Barycentric fallback geometry shaders are reused by interface and compilation ta
 
 Per-game progress (stage reached, open blockers, libraries and GPU coverage) is tracked on the [blocker map](https://alxcbtw.github.io/anyps5-roadmap/), a community project built from public GitHub data ([source](https://github.com/AlxcBTW/anyps5-roadmap)). Test reports go in the [Game bring-up](https://github.com/boykopovar/AnyPS5/discussions/categories/game-bring-up) discussions, one thread per title.
 
+The shader compiler removes redundant f32 denormal checks when integer masks prove a nonzero exponent or zero mantissa, and after min/max of denormal-free operands. Targeted Windows NVIDIA and Linux lavapipe tests preserve NaNs, infinities, signed zeros and subnormal cases. Game FPS improvements have not been measured; export coverage is unchanged.
+
 The [Desktop launcher](docs/user/DESKTOP.md) now preserves original game resolution. Output-width presets are disabled after Valheim showed corrupted rendering; previously managed configurations are restored on launch without overwriting external edits. Coherent internal render scaling and detail presets remain unimplemented. Export coverage is unchanged.
 
 The Desktop loading overlay reports real shader/pipeline work during presentation pauses, with completed step counts and explicit no-progress/stale-status messages. It hides when frames resume or the game loses focus. No total or completion time is assumed. See [Desktop loading status](docs/user/DESKTOP.md#loading-overlay) for supported window systems and verification. This does not resolve the remaining Valheim stall or GPU performance issue. Export coverage is unchanged.
