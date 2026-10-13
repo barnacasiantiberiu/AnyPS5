@@ -1,0 +1,31 @@
+{
+  "name": "anyps5-desktop",
+  "version": "0.5.0",
+  "description": "Desktop game library and conversion assistant for AnyPS5",
+  "main": "src/main.cjs",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/installer.test.cjs tests/source-layout.test.cjs tests/player-settings.test.cjs tests/iso-source.test.cjs tests/input-profile.test.cjs tests/controller-navigation.test.cjs",
+    "test:ui": "node tests/desktop.cjs",
+    "package": "electron-packager . \"AnyPS5 Desktop\" --platform=win32 --arch=x64 --out=dist --overwrite --asar --ignore=^/tests --ignore=^/artifacts --ignore=^/dist",
+    "test:keyboard": "node tests/keyboard.cjs",
+    "test:background": "node tests/background.cjs",
+    "test:native": "node tests/native-presentation.cjs",
+    "test:progress": "node tests/progress.cjs",
+    "test:browse": "node tests/browse.cjs",
+    "test:audio": "node tests/audio.cjs",
+    "test:audio-settings": "node tests/audio-settings.cjs",
+    "test:iso-ui": "node tests/iso-ui.cjs",
+    "test:iso-native": "node tests/iso-native.cjs",
+    "test:iso-close": "node tests/iso-close.cjs",
+    "test:controller": "node tests/controller-ui.cjs",
+    "test:graphics": "node --test tests/graphics-settings.test.cjs",
+    "test:graphics-ui": "node tests/graphics-ui.cjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.7.0",
+    "playwright": "1.64.0"
+  }
+}
