@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <list>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -192,12 +193,28 @@ RecompileResult BuildBarycentricGeometryShader(const RecompileResult& vertex, co
     const auto inputComponents = 4u + 4u * static_cast<std::uint32_t>(sources.size());
     const auto fragmentComponents = 4u * (static_cast<std::uint32_t>(passed.size()) + barycentrics + 3u * static_cast<std::uint32_t>(perVertex.size()));
     require(limits->maxGeometryOutputVertices >= 3u && outputComponents <= limits->maxGeometryOutputComponents && 3u * outputComponents <= limits->maxGeometryTotalOutputComponents && inputComponents <= limits->maxGeometryInputComponents && fragmentComponents <= limits->maxFragmentInputComponents, "the emulated barycentric interface exceeds device limits");
-    BarycentricGeometryEmitter emitter(target.spirvVersion);
+    std::vector<std::uint32_t> key{target.vulkanVersion, target.spirvVersion, layout.smoothLocation, layout.linearLocation, static_cast<std::uint32_t>(passed.size())};
+    key.insert(key.end(), passed.begin(), passed.end());
+    for (const auto& parameter : perVertex) {
+        key.push_back(parameter.sourceLocation);
+        key.push_back(parameter.location);
+    }
+    static thread_local std::list<std::pair<std::vector<std::uint32_t>, SharedSpirv>> cache;
     RecompileResult result;
+    const auto found = std::find_if(cache.begin(), cache.end(), [&](const auto& entry) { return entry.first == key; });
+    if (found != cache.end()) {
+        result.spirv = found->second;
+        result.cacheHit = true;
+        cache.splice(cache.begin(), cache, found);
+        return result;
+    }
+    BarycentricGeometryEmitter emitter(target.spirvVersion);
     result.spirv = emitter.Emit(passed, perVertex, layout);
 #if ANYPS5_ENABLE_SPIRV_TOOLS
     result.spirv = ValidateAndOptimizeSpirv(result.spirv, target.vulkanVersion, target.spirvVersion);
 #endif
+    cache.emplace_front(std::move(key), result.spirv);
+    if (cache.size() > 128u) cache.pop_back();
     return result;
 }
 
