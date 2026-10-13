@@ -128,6 +128,14 @@ public:
             CloseHandle(mapping);
             throw std::system_error(error, std::system_category(), "descriptor status mutex");
         }
+        positionMutex = CreateMutexW(&security, FALSE, nullptr);
+        if (positionMutex == nullptr) {
+            const DWORD error = GetLastError();
+            CloseHandle(mutex);
+            UnmapViewOfFile(const_cast<LONG*>(flags));
+            CloseHandle(mapping);
+            throw std::system_error(error, std::system_category(), "descriptor position mutex");
+        }
         InterlockedExchange(flags, value);
 #else
         flags = value;
@@ -139,11 +147,16 @@ public:
         UnmapViewOfFile(const_cast<LONG*>(flags));
         CloseHandle(mapping);
         CloseHandle(mutex);
+        CloseHandle(positionMutex);
 #endif
     }
 
     DescriptorStatus(const DescriptorStatus&) = delete;
     DescriptorStatus& operator=(const DescriptorStatus&) = delete;
+
+#ifdef _WIN32
+    HANDLE PositionMutex() const { return positionMutex; }
+#endif
 
     int Load() const {
 #ifdef _WIN32
@@ -186,6 +199,7 @@ private:
 #ifdef _WIN32
     HANDLE mapping = nullptr;
     HANDLE mutex = nullptr;
+    HANDLE positionMutex = nullptr;
     volatile LONG* flags = nullptr;
 #else
     int flags = 0;
@@ -284,6 +298,7 @@ void ApplyHostStatus(int fd, Kind kind, int changed, int next, const char* funct
 
 int Readable(int fd, Kind kind, const char* function) {
     if (kind == Kind::File) {
+        const File::PositionGuard position(fd);
         const auto size = ::_filelengthi64(fd);
         const auto offset = ::_telli64(fd);
         if (size < 0 || offset < 0)
@@ -487,6 +502,37 @@ int ReadAheadControl(int fd, int command, std::intptr_t argument) {
 }
 
 namespace File {
+
+#ifdef _WIN32
+std::shared_ptr<void> PositionGuard::Capture(int descriptor) {
+    const HostDescriptorOperation operation;
+    const int savedErrno = errno;
+    const auto handle = NativeHandle(descriptor);
+    std::shared_ptr<void> result;
+    if (handle != INVALID_HANDLE_VALUE && GetFileType(handle) == FILE_TYPE_DISK) {
+        std::lock_guard lock(g_mutex);
+        result = Materialize(descriptor).status;
+    }
+    errno = savedErrno;
+    return result;
+}
+
+PositionGuard::PositionGuard(int descriptor) : PositionGuard(Capture(descriptor)) {}
+
+PositionGuard::PositionGuard(std::shared_ptr<void> state) : owner(std::move(state)) {
+    if (owner) {
+        const auto positionMutex = static_cast<DescriptorStatus*>(owner.get())->PositionMutex();
+        const DWORD result = WaitForSingleObject(positionMutex, INFINITE);
+        if (result != WAIT_OBJECT_0 && result != WAIT_ABANDONED)
+            throw std::system_error(GetLastError(), std::system_category(), "descriptor position lock");
+        mutex = positionMutex;
+    }
+}
+
+PositionGuard::~PositionGuard() {
+    if (mutex != nullptr && !ReleaseMutex(mutex)) std::terminate();
+}
+#endif
 
 FcntlArgument FcntlArgumentOf(int command) {
     switch (command) {

@@ -64,6 +64,7 @@ void Mapping(bool forkCase) {
     Require(first[36] == std::byte{0} && privateView[35] == std::byte{0x73});
     if (forkCase) {
         const int child = fork_nid_postfix();
+        if (child < 0) std::fprintf(stderr, "guest fork failed: errno=%d\n", *__error_nid_postfix());
         Require(child >= 0);
         if (child == 0) {
             first[40] = std::byte{0x81};

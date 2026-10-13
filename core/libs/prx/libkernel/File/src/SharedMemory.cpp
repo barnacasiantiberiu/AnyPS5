@@ -852,12 +852,15 @@ int TruncateSharedMemory_nid_no_patch(int descriptor, std::int64_t length) {
 }
 
 extern "C" int APS5_VABI shm_open_nid_postfix(const char* path, int flags, int mode) {
+    const int savedError = *__error_nid_postfix();
     const HostDescriptorOperation operation;
     const int accessMode = flags & SCE_KERNEL_O_ACCMODE;
     if (accessMode != SCE_KERNEL_O_RDONLY && accessMode != SCE_KERNEL_O_RDWR) return Fail(GuestInvalid);
     if ((flags & ~AcceptedFlags) != 0) return Fail(GuestInvalid);
     if (path != anonymousObject) {
-        return OpenNamedFile(path, flags, mode);
+        const int descriptor = OpenNamedFile(path, flags, mode);
+        if (descriptor >= 0) *__error_nid_postfix() = savedError;
+        return descriptor;
     }
     if (accessMode == SCE_KERNEL_O_RDONLY) return Fail(GuestInvalid);
     const int descriptor = CreateAnonymousFile(mode);
@@ -866,6 +869,7 @@ extern "C" int APS5_VABI shm_open_nid_postfix(const char* path, int flags, int m
         try { File::RememberDescriptor(descriptor, flags | GuestCloseOnExec); }
         catch (...) { ::_close(descriptor); throw; }
 #endif
+        *__error_nid_postfix() = savedError;
         return descriptor;
     }
     const int error = errno;

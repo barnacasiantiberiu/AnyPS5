@@ -111,12 +111,15 @@ static int NativeFchmod(int descriptor, int mode) {
 }
 static int NativeFtruncate(int descriptor, std::int64_t length) {
     const int result = File::TruncateSharedMemory_nid_no_patch(descriptor, length);
-    return result == -2 ? static_cast<int>(::_chsize_s(descriptor, length)) : result;
+    if (result != -2) return result;
+    const File::PositionGuard position(descriptor);
+    return static_cast<int>(::_chsize_s(descriptor, length));
 }
 static int NativeTruncate(const std::filesystem::path& path, std::int64_t length) {
     const int descriptor = ::_wopen(path.c_str(), _O_WRONLY | _O_BINARY);
     if (descriptor < 0) return errno;
     const int error = NativeFtruncate(descriptor, length);
+    File::ForgetDescriptor(descriptor);
     ::_close(descriptor);
     return error;
 }
@@ -182,6 +185,7 @@ std::int64_t NativePositioned_nid_no_patch(int descriptor, void* buf, std::size_
     const auto shared = write ? File::PwriteSharedMemory_nid_no_patch(descriptor, buf, nbytes, offset) :
         File::PreadSharedMemory_nid_no_patch(descriptor, buf, nbytes, offset);
     if (shared != -2) return shared;
+    const File::PositionGuard positionGuard(descriptor);
     const auto handle = reinterpret_cast<HANDLE>(WithoutParameterHandler([descriptor] { return ::_get_osfhandle(descriptor); }));
     if (handle == INVALID_HANDLE_VALUE) {
         errno = EBADF;
@@ -216,6 +220,7 @@ static std::int64_t NativeTransfer(int descriptor, void* buf, std::size_t nbytes
     const auto shared = write ? File::WriteSharedMemory_nid_no_patch(descriptor, buf, nbytes) :
         File::ReadSharedMemory_nid_no_patch(descriptor, buf, nbytes);
     if (shared != -2) return shared;
+    const File::PositionGuard position(descriptor);
     return write ? ::_write(descriptor, buf, static_cast<unsigned int>(nbytes)) : ::_read(descriptor, buf, static_cast<unsigned int>(nbytes));
 }
 static bool NativeIsDisk(int descriptor) {

@@ -83,6 +83,24 @@ endif()
 configure_windows_unwind(libkernel)
 
 if(BUILD_TESTING)
+    add_test_executable(guest_positioned_concurrency_tests ${LIBS_INCLUDE_DIR}/tests/GuestPositionedConcurrency.cpp)
+    target_include_directories(guest_positioned_concurrency_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_positioned_concurrency_tests PRIVATE libkernel libc)
+    configure_windows_unwind(guest_positioned_concurrency_tests)
+    foreach(mode IN ITEMS read write vector aio observe truncate isolation)
+        foreach(duplication IN ITEMS same dup dup2 fcntl)
+            if(mode STREQUAL "isolation" AND NOT duplication STREQUAL "same")
+                continue()
+            endif()
+            set(testName guest_positioned_${mode}_${duplication})
+            add_test(NAME ${testName} COMMAND guest_positioned_concurrency_tests ${mode} ${duplication})
+            set_tests_properties(${testName} PROPERTIES TIMEOUT 20 LABELS "module-functional;module:libkernel")
+            if(WIN32)
+                set_tests_properties(${testName} PROPERTIES ENVIRONMENT_MODIFICATION
+                    "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
+            endif()
+        endforeach()
+    endforeach()
     foreach(kernelCase IN ITEMS kqueue:GuestKqueue getsid:GuestIoctlGetsid equeue_descriptors:GuestEqueueDescriptors coredump:GuestCoredump module_segment:GuestModuleSegment)
         string(REPLACE ":" ";" kernelCase ${kernelCase})
         list(GET kernelCase 0 kernelCaseName)
@@ -1287,5 +1305,19 @@ if(BUILD_TESTING)
     if(WIN32)
         set_tests_properties(guest_coredump_attach PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
+    endif()
+    set_tests_properties(guest_aio guest_file_vector guest_truncate PROPERTIES
+        TIMEOUT 20 LABELS "module-functional;module:libkernel")
+    add_custom_target(kernel_functional_tests DEPENDS
+        guest_positioned_concurrency_tests guest_aio_tests guest_file_vector_tests guest_truncate_tests
+        guest_coredump_tests guest_equeue_descriptors_tests guest_equeue_event_tests guest_getsid_tests
+        guest_itimer_tests guest_kill_tests guest_kqueue_tests guest_kqueue_upstream_tests
+        guest_module_segment_tests guest_null_device_tests guest_shm_open_tests guest_signal_tests
+        guest_sigtimedwait_tests guest_umtx_semaphore_tests guest_waitpid_tests)
+    if(WIN32)
+        set_tests_properties(guest_aio_bad_descriptors PROPERTIES
+            TIMEOUT 20 LABELS "module-functional;module:libkernel")
+        add_dependencies(kernel_functional_tests guest_named_shm_windows_tests
+            guest_shm_mapping_windows_tests guest_tls_resolver_tests)
     endif()
 endif()

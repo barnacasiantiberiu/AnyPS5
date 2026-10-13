@@ -48,7 +48,9 @@ static int NativeOpen(const std::filesystem::path& p, int nativeFlags, std::uint
 }
 static std::int64_t NativeLseek(int fd, std::int64_t offset, int whence) {
     const auto result = File::SeekSharedMemory_nid_no_patch(fd, offset, whence);
-    return result == -2 ? ::_lseeki64(fd, offset, whence) : result;
+    if (result != -2) return result;
+    const File::PositionGuard position(fd);
+    return ::_lseeki64(fd, offset, whence);
 }
 static std::int64_t NativeRead(int fd, void* buf, std::size_t n) {
     if (n > static_cast<std::size_t>(std::numeric_limits<unsigned int>::max())) {
@@ -56,6 +58,7 @@ static std::int64_t NativeRead(int fd, void* buf, std::size_t n) {
     }
     const auto shared = File::ReadSharedMemory_nid_no_patch(fd, buf, n);
     if (shared != -2) return shared;
+    const File::PositionGuard position(fd);
     const int result = ::_read(fd, buf, static_cast<unsigned int>(n));
     if (result < 0 && _doserrno == ERROR_NO_DATA) errno = EAGAIN;
     return result;
@@ -66,6 +69,7 @@ static std::int64_t NativeWrite(int fd, const void* buf, std::size_t n) {
     }
     const auto shared = File::WriteSharedMemory_nid_no_patch(fd, buf, n);
     if (shared != -2) return shared;
+    const File::PositionGuard position(fd);
     const int result = ::_write(fd, buf, static_cast<unsigned int>(n));
     if (result < 0 && errno == ENOSPC && _doserrno == 0 && ::GetFileType(reinterpret_cast<HANDLE>(::_get_osfhandle(fd))) == FILE_TYPE_PIPE) errno = EAGAIN;
     return result;

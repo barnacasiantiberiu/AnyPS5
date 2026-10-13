@@ -163,6 +163,7 @@ void ForkRejectsActiveWaiters() {
     waiter.join();
     Require(result == 0 && semaphore.count == 0);
     const int child = fork_nid_postfix();
+    if (child < 0) std::fprintf(stderr, "guest fork failed: errno=%d\n", *__error_nid_postfix());
     Require(child >= 0);
     if (child == 0) {
         KernelTimespec immediate{};

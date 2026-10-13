@@ -22,6 +22,8 @@ Includes a [relinker](core/relinker) that converts executable to the target syst
 
 <!-- anyps5-status:end -->
 
+Export coverage is separate from functional portability. Kernel file-I/O regressions are tested on Windows and Linux; the Windows fork backend currently requires an exact Windows 11 runtime profile and fails the mandatory fork tests on Windows Server 2022. See [kernel validation and remaining limitations](docs/dev/debt/libkernel.md) and [portability CI](https://github.com/barnacasiantiberiu/AnyPS5/actions/workflows/portability.yml).
+
 Unsupported or unexpected states strictly throw `std::runtime_error`. `what()` is printed to stderr and the process terminates.
 
 The [shader recompiler](core/shader/recompiler/Recompiler.cpp) successfully produces SPIR-V (validated via [Spirv-Tools](3rdparty/SPIRV-Tools) when built with `ANYPS5_ENABLE_SPIRV_TOOLS`).

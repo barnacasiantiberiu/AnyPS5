@@ -2,6 +2,7 @@
 #include "prx/libkernel/File/include/File.hpp"
 #include "prx/libkernel/File/include/DirectoryDescriptor.hpp"
 #include "prx/libkernel/File/include/RandomDevice.hpp"
+#include "prx/libkernel/File/include/DescriptorControl.hpp"
 #include "prx/libkernel/Socket/include/SocketRuntime.hpp"
 #include "prx/libc/include/HostDescriptorFork.hpp"
 
@@ -29,6 +30,7 @@ struct DescriptorWatch {
     bool file = false;
 #ifdef _WIN32
     HANDLE handle = INVALID_HANDLE_VALUE;
+    std::shared_ptr<void> positionState;
     ~DescriptorWatch() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
 #else
     int descriptor = -1;
@@ -43,6 +45,7 @@ bool NativeReady(KernelEqueueEvent* event) {
     bool eof = false;
 #ifdef _WIN32
     if (watch.file) {
+        const File::PositionGuard position(watch.positionState);
         LARGE_INTEGER size{}, offset{}, zero{};
         if (!GetFileSizeEx(watch.handle, &size) || !SetFilePointerEx(watch.handle, zero, &offset, FILE_CURRENT))
             throw std::runtime_error("equeue: cannot query watched file size or offset");
@@ -130,6 +133,7 @@ int PrepareDescriptorEvent_nid_no_patch(KernelEqueueEvent& event, std::size_t lo
     const HANDLE handle = reinterpret_cast<HANDLE>(::_get_osfhandle(descriptor));
     const DWORD kind = GetFileType(handle);
     watch->file = kind == FILE_TYPE_DISK;
+    if (watch->file) watch->positionState = File::PositionGuard::Capture(descriptor);
     if (!watch->file && kind != FILE_TYPE_PIPE) NotImplemented_nid_no_patch("equeue: character device filter");
     if (watch->file && event.event.filter == EVFILT_WRITE) return SCE_KERNEL_ERROR_EINVAL;
     if (!DuplicateHandle(GetCurrentProcess(), handle, GetCurrentProcess(), &watch->handle, 0, FALSE, DUPLICATE_SAME_ACCESS))
