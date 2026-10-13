@@ -106,6 +106,7 @@ downloads/
 .DS_Store
 Thumbs.db
 cookies.txt
+/_media/
 
 .env
 .env.local
