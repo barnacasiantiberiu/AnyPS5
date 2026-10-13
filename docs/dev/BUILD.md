@@ -1,5 +1,7 @@
 # Build
 
+Audio-input functional tests use generated PCM through the bundled SDL disk driver and a missing-device configuration; no microphone is needed. Run `python tools/test_modules.py --module libSceAudioIn`. HQ and async input buffers must hold up to 384 frames in the selected format; consume only the returned frame count. Async reads can return zero without changing the buffer. The host mode choices and unverified console behavior are recorded in [libSceAudioIn technical debt](debt/libSceAudioIn.md). The existing SDL dependency and normal library packaging are unchanged.
+
 ## Relinker only
 
 The relinker can be built without initializing submodules or configuring SDL, Vulkan, FFmpeg, FreeType or the shader recompiler. It requires CMake, a C++20 compiler and a build tool. Python 3 enables the Python regression tests.

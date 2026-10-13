@@ -6,6 +6,7 @@
 #include "SDL.h"
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstring>
 #include <mutex>
@@ -30,6 +31,8 @@ struct Format {
     std::uint8_t channels;
 };
 
+enum class CaptureMode { Blocking, HighQuality, Asynchronous };
+
 struct Port {
     bool used = false;
     bool busy = false;
@@ -38,6 +41,7 @@ struct Port {
     SDL_AudioDeviceID device = 0;
     Clock::duration grain{};
     Clock::time_point next{};
+    CaptureMode mode = CaptureMode::Blocking;
 };
 
 std::mutex g_mutex;
@@ -48,7 +52,7 @@ bool formatOf(std::uint32_t param, Format& format) {
     switch (param) {
         case 1: format = {AUDIO_S16SYS, 1}; return true;
         case 2: format = {AUDIO_S16SYS, 2}; return true;
-        case 0x11: format = {AUDIO_F32SYS, 1}; return true;
+        case 0x10: case 0x11: format = {AUDIO_F32SYS, 1}; return true;
         case 0x12: format = {AUDIO_F32SYS, 2}; return true;
         default: return false;
     }
@@ -63,7 +67,7 @@ SDL_AudioDeviceID openDevice(std::uint32_t freq, std::uint32_t samples, const Fo
     desired.freq = static_cast<int>(freq);
     desired.format = format.format;
     desired.channels = format.channels;
-    desired.samples = static_cast<Uint16>(samples);
+    desired.samples = static_cast<Uint16>(std::bit_ceil(std::max(samples, 128u)));
     SDL_AudioSpec obtained{};
     const SDL_AudioDeviceID device = SDL_OpenAudioDevice(nullptr, 1, &desired, &obtained, 0);
     if (device != 0) SDL_PauseAudioDevice(device, 0);
@@ -76,19 +80,17 @@ Port* find(int handle) {
     return port.used ? &port : nullptr;
 }
 
-int checkArguments(std::uint32_t type, std::uint32_t index, std::uint32_t len, std::uint32_t freq) {
+int checkArguments(std::uint32_t type, std::uint32_t index, std::uint32_t len, std::uint32_t freq, CaptureMode mode) {
     if (type != 0 && type != 1) return AUDIO_IN_ERROR_INVALID_TYPE;
     if (index != 0) return AUDIO_IN_ERROR_INVALID_PARAM;
-    if (len != 128 && len != 256) return AUDIO_IN_ERROR_INVALID_SIZE;
-    if (freq != 48000 && freq != 16000) return AUDIO_IN_ERROR_INVALID_FREQ;
+    if (mode == CaptureMode::Asynchronous) {
+        if (len == 0 || len > MAX_ASYNC_LEN) return AUDIO_IN_ERROR_INVALID_SIZE;
+    } else if (len != 128 && (mode == CaptureMode::HighQuality || len != 256)) return AUDIO_IN_ERROR_INVALID_SIZE;
+    if (freq != 48000 && (mode == CaptureMode::HighQuality || freq != 16000)) return AUDIO_IN_ERROR_INVALID_FREQ;
     return 0;
 }
 
-int openPort(std::uint32_t len, std::uint32_t freq, std::uint32_t param, const char* function) {
-    if (param == 0x10) {
-        NotImplemented_nid_no_patch(function);
-        return 0;
-    }
+int openPort(std::uint32_t len, std::uint32_t freq, std::uint32_t param, CaptureMode mode) {
     Format format{};
     if (!formatOf(param, format)) return AUDIO_IN_ERROR_INVALID_PARAM;
     std::lock_guard lock(g_mutex);
@@ -96,7 +98,7 @@ int openPort(std::uint32_t len, std::uint32_t freq, std::uint32_t param, const c
         if (g_ports[i].used) continue;
         const auto frameBytes = static_cast<std::uint32_t>(SDL_AUDIO_BITSIZE(format.format) / 8 * format.channels);
         const auto grain = std::chrono::duration_cast<Clock::duration>(std::chrono::microseconds(1000000ull * len / freq));
-        g_ports[i] = {true, false, len, frameBytes, openDevice(freq, len, format), grain, {}};
+        g_ports[i] = {true, false, len, frameBytes, openDevice(freq, len, format), grain, {}, mode};
         return static_cast<int>(i + 1);
     }
     return AUDIO_IN_ERROR_PORT_FULL;
@@ -111,6 +113,22 @@ std::size_t capture(SDL_AudioDeviceID device, std::uint8_t* dest, std::size_t by
         excess -= SDL_DequeueAudio(device, discard.data(), chunk);
     }
     return SDL_DequeueAudio(device, dest, static_cast<Uint32>(bytes));
+}
+
+std::size_t captureAvailable(SDL_AudioDeviceID device, void* dest, std::uint32_t frameBytes) {
+    const auto queued = SDL_GetQueuedAudioSize(device);
+    const auto capacity = MAX_ASYNC_LEN * frameBytes;
+    std::array<std::uint8_t, MAX_ASYNC_LEN * 8> discard{};
+    std::size_t excess = queued > capacity * MAX_QUEUED_BLOCKS ? queued - capacity * MAX_QUEUED_BLOCKS : 0;
+    excess -= excess % frameBytes;
+    while (excess) {
+        const auto removed = SDL_DequeueAudio(device, discard.data(), static_cast<Uint32>(std::min(excess, discard.size())));
+        if (!removed) break;
+        excess -= removed;
+    }
+    const auto available = SDL_GetQueuedAudioSize(device);
+    const auto bytes = std::min(available - available % frameBytes, capacity);
+    return SDL_DequeueAudio(device, dest, bytes) / frameBytes;
 }
 
 }
@@ -145,26 +163,35 @@ int APS5_VABI sceAudioInInput(int handle, void* dest) {
     port->next = wake + port->grain;
     const auto deadline = now + port->grain * MAX_QUEUED_BLOCKS;
     const int samples = static_cast<int>(port->samples);
+    const auto mode = port->mode;
+    const auto frameBytes = port->frameBytes;
+    const auto grain = port->grain;
     port->busy = true;
     lock.unlock();
 
     auto* out = static_cast<std::uint8_t*>(dest);
     std::size_t captured = 0;
-    if (device != 0) {
+    int result = samples;
+    if (mode != CaptureMode::Blocking) {
+        if (mode == CaptureMode::HighQuality) PreciseSleepUntil(now + grain);
+        if (device) result = static_cast<int>(captureAvailable(device, dest, frameBytes));
+        else if (mode == CaptureMode::Asynchronous) result = 0;
+        else std::memset(out, 0, bytes);
+    } else if (device != 0) {
         captured = capture(device, out, bytes, deadline);
     } else {
         PreciseSleepUntil(wake);
     }
-    std::memset(out + captured, 0, bytes - captured);
+    if (mode == CaptureMode::Blocking) std::memset(out + captured, 0, bytes - captured);
     lock.lock();
     port->busy = false;
-    return samples;
+    return result;
 }
 
 int APS5_VABI sceAudioInOpen(int user_id, uint32_t type, uint32_t index, uint32_t len, uint32_t freq, uint32_t param) {
     (void)user_id;
-    if (const int error = checkArguments(type, index, len, freq); error != 0) return error;
-    return openPort(len, freq, param, __func__);
+    if (const int error = checkArguments(type, index, len, freq, CaptureMode::Blocking); error != 0) return error;
+    return openPort(len, freq, param, CaptureMode::Blocking);
 }
 
 int32_t APS5_VABI sceAudioInClose(int32_t handle) {
@@ -179,23 +206,14 @@ int32_t APS5_VABI sceAudioInClose(int32_t handle) {
 
 int32_t APS5_VABI sceAudioInHqOpen(int32_t user_id, uint32_t type, uint32_t index, uint32_t len, uint32_t freq, uint32_t param) {
     (void)user_id;
-    if (const int error = checkArguments(type, index, len, freq); error != 0) return error;
-    if (len != 128 || freq != 48000) {
-        NotImplemented_nid_no_patch(__func__);
-        return 0;
-    }
-    return openPort(len, freq, param, __func__);
+    if (const int error = checkArguments(type, index, len, freq, CaptureMode::HighQuality); error != 0) return error;
+    return openPort(len, freq, param, CaptureMode::HighQuality);
 }
 
 int32_t APS5_VABI sceAudioInAsyncOpen(int32_t user_id, uint32_t type, uint32_t index, uint32_t len, uint32_t freq, uint32_t param) {
     (void)user_id;
-    const int error = checkArguments(type, index, len, freq);
-    if (error == AUDIO_IN_ERROR_INVALID_SIZE && len <= MAX_ASYNC_LEN) {
-        NotImplemented_nid_no_patch(__func__);
-        return 0;
-    }
-    if (error != 0) return error;
-    return openPort(len, freq, param, __func__);
+    if (const int error = checkArguments(type, index, len, freq, CaptureMode::Asynchronous); error != 0) return error;
+    return openPort(len, freq, param, CaptureMode::Asynchronous);
 }
 
 int32_t APS5_VABI sceAudioInIsPadEmbeddedMic(int32_t handle) {
