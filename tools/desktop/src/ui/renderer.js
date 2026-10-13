@@ -318,9 +318,9 @@ function openSettings(tabName = 'players') {
   fillAudioSettings(state.settings.audio); fillInputSettings(state.settings.input);
   const resolution = $('graphics-resolution');
   resolution.replaceChildren(...state.resolutions.map(item => {
-    const option = document.createElement('option'); option.value = item.value; option.textContent = item.label; return option;
+    const option = document.createElement('option'); option.value = item.value; option.textContent = item.label; option.disabled = item.value !== 'native'; return option;
   }));
-  resolution.value = state.settings.graphics?.resolution || '1920x1080';
+  resolution.value = 'native';
   renderPlayerRows(); initializeControllerMonitor();
   setSettingsTab(tabName); show('settings-error', false); $('settings-dialog').showModal();
   pollControllers(); clearInterval(controllerPoll); controllerPoll = setInterval(pollControllers, 150);
