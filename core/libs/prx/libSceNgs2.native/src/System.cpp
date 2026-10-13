@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -241,7 +242,11 @@ int APS5_VABI sceNgs2SystemRender(uintptr_t system_handle, const Ngs2RenderBuffe
     auto* system = Ngs2FindSystem(system_handle);
     if (system == nullptr) return SCE_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
     if (buffer_info == nullptr || num_buffer_info == 0) APS5_INVALID_ARG_EX;
+    const double grainSeconds = double(system->option.num_grain_samples) / system->option.sample_rate;
+    const auto start = std::chrono::steady_clock::now();
     Ngs2RenderSystem(*system, buffer_info, num_buffer_info);
+    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    Ngs2ReportCpuLoad(system_handle, elapsed / grainSeconds);
     return SCE_NGS2_OK;
 }
 
