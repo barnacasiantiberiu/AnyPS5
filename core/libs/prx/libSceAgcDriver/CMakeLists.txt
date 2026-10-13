@@ -345,6 +345,19 @@ target_link_libraries(agc_driver_tests PRIVATE
 set_target_properties(agc_driver_tests PROPERTIES CXX_EXTENSIONS OFF)
 configure_windows_unwind(agc_driver_tests)
 
+if(BUILD_TESTING)
+    add_test_executable(agc_driver_shader_signal_tests tests/ShaderSignal.cpp)
+    target_include_directories(agc_driver_shader_signal_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(agc_driver_shader_signal_tests PRIVATE libSceAgcDriver libkernel libc)
+    configure_windows_unwind(agc_driver_shader_signal_tests)
+    add_test(NAME agc_driver_shader_signal COMMAND agc_driver_shader_signal_tests)
+    set_tests_properties(agc_driver_shader_signal PROPERTIES TIMEOUT 30 LABELS "module-functional;module:libSceAgcDriver")
+    if(WIN32)
+        set_tests_properties(agc_driver_shader_signal PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
+    endif()
+endif()
+
 add_test_executable(agc_driver_wait_shutdown_tests EXCLUDE_FROM_ALL tests/WaitShutdown.cpp)
 target_include_directories(agc_driver_wait_shutdown_tests PRIVATE ${LIBS_INCLUDE_DIR})
 target_link_libraries(agc_driver_wait_shutdown_tests PRIVATE libSceAgcDriver libkernel libc)

@@ -1,5 +1,13 @@
 # libSceAgcDriver technical debt
 
+### Shader preparation signals
+
+Guest signals are deferred while a shader preparation transaction holds or waits for its writer mutex. Nested preparation, commit, rollback, and staged-object destruction finish before delivery; this prevents a stopped shader compiler from stranding other guest threads in native mutex waits. The CPU-only signal regression checks both commit and rollback with handler reentry. The shared kernel entry points use stable host export names preserved by NID packaging; CI checks the packaged exports. Other AGC host locks remain outside this protection, so complete signal safety is not established.
+
+### Tessellated barycentric fallback
+
+The generated barycentric geometry stage follows the tessellation evaluation stage and precedes the fragment stage for the existing triangular tessellation path. This follows the [Vulkan geometry input rules](https://docs.vulkan.org/spec/latest/chapters/geometry.html); it preserves the preceding stage's parameter exports and uses the existing device limits. Perspective-center and linear-center weights are checked with rendered reference pixels while the barycentric extension is forced off. Rectangle, mesh, non-triangular tessellation, and unsupported geometry limits retain explicit rejection. Removing Valheim's stage restriction does not establish complete rendering accuracy or gameplay compatibility.
+
 ### Unknown function info
 
 - [sceAgcDriverSetSubmitValidationMode, sceAgcDriverGetSubmitValidationMode, sceAgcDriverSetSubmitValidationConfig, sceAgcDriverGetSubmitValidationConfig, sceAgcDriverSetValidationErrorOutputFrequency, sceAgcDriverGetShaderDebuggingStatus](../../../core/libs/prx/libSceAgcDriver/Unimplemented.cpp) (libSceAgcDriver) - the five validation calls return `0x8A6C1000` without reading their arguments or writing caller memory, and `sceAgcDriverGetShaderDebuggingStatus` returns 1, as [OpenAGC](https://github.com/OpenAGC/OpenAGC/blob/3c7e8072f0d7684e930454794fd5c02056946d73/src/game_compat.c#L250-L291) reads them from Sony's libSceAgcDriver.sprx: each validation export is `mov eax, 0x8a6c1000; ret` in the copy Dragon Quest VII Reimagined bundles (0x7bb0-0x7bf0), and the debugging status is 1 in the firmware 5.50 library (0x6740). The parameters (a 32-bit mode or frequency, a mode output, a configuration pointer) follow OpenAGC and are never read. Whether later retail firmware enables submit validation or shader debugging is unverified; no title in this repository is known to call them

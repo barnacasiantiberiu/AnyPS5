@@ -6,12 +6,15 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cmath>
+#include <string_view>
 #include <cstdlib>
 #include <iostream>
 #include <optional>
 #include <span>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -131,7 +134,7 @@ struct Stages {
     ShaderRecompiler::RecompileResult fragment;
 };
 
-ShaderRecompiler::RecompileResult Compile(const ShaderRecompiler::SpirvTarget& target, ShaderStage stage, std::span<const std::uint32_t> code, std::uint32_t& pushCursor) {
+ShaderRecompiler::RecompileResult Compile(const ShaderRecompiler::SpirvTarget& target, ShaderStage stage, std::span<const std::uint32_t> code, std::uint32_t& pushCursor, std::uint32_t barycentricInput = 0) {
     static const std::array<std::uint32_t, 16> hullUserData{0x1000u};
     static const std::array<std::uint32_t, 8> domainUserData{};
     const std::array<ShaderRecompiler::MemoryRegion, 1> memory{{{reinterpret_cast<std::uintptr_t>(code.data()), std::as_bytes(code)}}};
@@ -146,6 +149,11 @@ ShaderRecompiler::RecompileResult Compile(const ShaderRecompiler::SpirvTarget& t
         info.interpolatorSettings[0] = 0x400u;
         info.targetOutputMode[0] = 9;
         info.targetExportMapping.fill(0xe4u);
+        if (barycentricInput != 0) {
+            info.inputAddr = barycentricInput;
+            info.hasPerspectiveCenterVgpr = (barycentricInput & ShaderRecompiler::PixelInputBit(ShaderRecompiler::PixelInput::PerspectiveCenter)) != 0;
+            info.noPerspective = (barycentricInput & ShaderRecompiler::PixelInputBit(ShaderRecompiler::PixelInput::LinearCenter)) != 0;
+        }
         pixel = info;
     } else {
         vertex = ShaderRecompiler::ShaderVertexStageInfo{};
@@ -203,12 +211,17 @@ void Draw(AgcDriver::VulkanDevice& device, const Stages& stages, VkCullModeFlags
         cursor += static_cast<std::uint32_t>(result.pushConstants.size());
         return at;
     };
-    const std::array<AgcDriver::Graphics::CompiledShader, 4> shaders{{
+    std::vector<AgcDriver::Graphics::CompiledShader> shaders{
         {ShaderStage::Local, &stages.local, offset(stages.local)},
         {ShaderStage::TessellationControl, &stages.hull, offset(stages.hull)},
         {ShaderStage::TessellationEvaluation, &stages.domain, offset(stages.domain)},
         {ShaderStage::Fragment, &stages.fragment, PixelPushOffset(cursor, device.Target())},
-    }};
+    };
+    ShaderRecompiler::RecompileResult geometry;
+    if (stages.fragment.barycentricEmulation.active) {
+        geometry = ShaderRecompiler::BuildBarycentricGeometryShader(stages.domain, stages.fragment, device.Target(), device.GeometryLimits());
+        shaders.insert(shaders.end() - 1, {ShaderStage::Geometry, &geometry, 0});
+    }
     AgcDriver::Graphics::State state{};
     state.stages = {AgcDriver::Graphics::ShaderPath::Tessellation, 0x0200210du, 64, 64, std::nullopt, Patches};
     state.color = {reinterpret_cast<std::uintptr_t>(Pixels.data()), {Width, Height}, VK_FORMAT_R8G8B8A8_UNORM, Pixels.size(), 0xe4u};
@@ -262,6 +275,47 @@ void RequirePatches(AgcDriver::VulkanDevice& device, const ShaderRecompiler::Spi
     Require(CoveredPixels(0, false) == 0 && CoveredPixels(2, false) == 0, program + ": tessellated triangles did not keep the control points' winding");
 }
 
+void RequireBarycentricPatches(AgcDriver::VulkanDevice& device) {
+    auto target = device.Target();
+    target.fragmentShaderBarycentricEnabled = false;
+    alignas(256) static constexpr std::array<std::uint32_t, 3> code{0xf800180f, 0x01000100, 0xbf810000};
+    for (const auto input : {ShaderRecompiler::PixelInput::PerspectiveCenter, ShaderRecompiler::PixelInput::LinearCenter}) {
+        std::uint32_t cursor = 0;
+        const Stages stages{
+            Compile(target, ShaderStage::Local, LocalCode, cursor),
+            Compile(target, ShaderStage::TessellationControl, HullCode, cursor),
+            Compile(target, ShaderStage::TessellationEvaluation, DomainCode, cursor),
+            Compile(target, ShaderStage::Fragment, code, cursor, ShaderRecompiler::PixelInputBit(input)),
+        };
+        Require(stages.fragment.barycentricEmulation.active, "tessellation fixture did not request barycentric emulation");
+        Draw(device, stages, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+        std::uint32_t checked = 0;
+        for (std::uint32_t y = 0; y < Height; ++y) {
+            for (std::uint32_t x = 0; x < Width; ++x) {
+                const float nx = (static_cast<float>(x) + 0.5f) * 2.0f / Width - 1.0f;
+                const float ny = 1.0f - (static_cast<float>(y) + 0.5f) * 2.0f / Height;
+                const float top = ny + 0.5f;
+                const float right = (nx + 0.9f - 0.25f * top) / 0.5f;
+                std::array<float, 3> expected{1.0f - right - top, right, top};
+                if (*std::min_element(expected.begin(), expected.end()) < 0.05f) continue;
+                const auto pixel = PixelAt(x, y);
+                Require(pixel != Background && pixel[0] == pixel[2] && pixel[1] == pixel[3], "tessellated barycentric pixel is missing or corrupt");
+                const float i = pixel[0] / 255.0f;
+                const float j = pixel[1] / 255.0f;
+                std::array<float, 3> actual{1.0f - i - j, i, j};
+                std::sort(expected.begin(), expected.end());
+                std::sort(actual.begin(), actual.end());
+                for (std::size_t k = 0; k < expected.size(); ++k)
+                    Require(std::fabs(expected[k] - actual[k]) < 0.012f, "tessellated barycentric weights differ from the triangle reference at " + std::to_string(x) + "," + std::to_string(y) + ": " + PixelText(pixel));
+                ++checked;
+            }
+        }
+        Require(checked > 100, "too few tessellated barycentric pixels checked");
+        Require(PixelAt(Column(1, 0.25f), Row(-0.2f)) == Background, "zero-level patch produced barycentric fragments");
+        std::printf("tessellated barycentric mode %u: %u reference pixels passed\n", static_cast<unsigned>(input), checked);
+    }
+}
+
 struct RegisteredStage {
     Shader shader{};
     std::array<ShaderRegister, 6> registers{};
@@ -311,7 +365,7 @@ void RequireRegisteredStages() {
 
 }
 
-int main() {
+int main(int argc, char** argv) {
     try {
         auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
@@ -319,6 +373,10 @@ int main() {
         if (!target.tessellation.has_value()) {
             std::puts("tessellation: skipped, the device has no tessellation shaders");
             return VulkanTestSkipped;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "barycentric") {
+            RequireBarycentricPatches(*device);
+            return 0;
         }
         ExpectRefusal(target, ShaderStage::TessellationControl, HullUnguardedFactors, "not written by control point 0 alone");
         ExpectRefusal(target, ShaderStage::TessellationControl, HullSquaredAddress, "not affine");
@@ -329,6 +387,7 @@ int main() {
 
         RequirePatches(*device, target, HullCode, "hull program");
         RequirePatches(*device, target, HullRestoredExecSaved, "hull program saving its restored exec");
+        RequireBarycentricPatches(*device);
         device.reset();
         RequireRegisteredStages();
         std::puts("Tessellation tests passed");

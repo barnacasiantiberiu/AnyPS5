@@ -32,6 +32,10 @@ Guest module conversion preserves original module files alongside converted modu
 
 Kernel address waits defer guest signal delivery while internal synchronization locks are held. Windows and Linux regression tests cover repeated stop/resume handlers during concurrent waits and wakes. This removes the reproduced Valheim startup deadlock; later GPU compatibility is tracked separately. Export coverage is unchanged.
 
+Shader preparation transactions also defer guest signals until their writer lock and staged objects are released, including rollback and nested preparation.
+
+The AGC driver can emulate fragment barycentrics after triangular tessellation on GPUs without `VK_KHR_fragment_shader_barycentric`. Render regressions check perspective and linear weights against triangle reference pixels. This addresses the subsequent Valheim shader-stage failure; full gameplay and performance remain unverified.
+
 Per-game progress (stage reached, open blockers, libraries and GPU coverage) is tracked on the [blocker map](https://alxcbtw.github.io/anyps5-roadmap/), a community project built from public GitHub data ([source](https://github.com/AlxcBTW/anyps5-roadmap)). Test reports go in the [Game bring-up](https://github.com/boykopovar/AnyPS5/discussions/categories/game-bring-up) discussions, one thread per title.
 
 ## Input mapping

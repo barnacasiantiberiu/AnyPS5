@@ -259,9 +259,13 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
     };
     if (graphics.rectList) buildRectList();
     if (!programs.empty() && programResults.back() != nullptr && programResults.back()->barycentricEmulation.active) {
-        require(!graphics.rectList && graphics.stages.path == Graphics::ShaderPath::Vertex && programs.size() == 2 && programResults[0] != nullptr && stages.size() == 2, "a pixel shader that reads barycentrics without VK_KHR_fragment_shader_barycentric needs a vertex shader before it");
-        results.push_back(ShaderRecompiler::BuildBarycentricGeometryShader(*programResults[0], *programResults[1], localDevice->Target(), localDevice->GeometryLimits()));
-        stages.insert(stages.begin() + 1, Graphics::CompiledShader{Stage::Geometry, &results.back(), 0});
+        const bool vertex = graphics.stages.path == Graphics::ShaderPath::Vertex && stages.size() == 2;
+        const bool tessellation = graphics.stages.path == Graphics::ShaderPath::Tessellation && stages.size() == 4;
+        require(!graphics.rectList && (vertex || tessellation), "emulated barycentrics require a vertex or triangular tessellation pipeline");
+        const auto& producer = stages[stages.size() - 2];
+        require(producer.program != nullptr && producer.stage == (tessellation ? Stage::TessellationEvaluation : Stage::Vertex), "emulated barycentrics have no compatible preceding stage");
+        results.push_back(ShaderRecompiler::BuildBarycentricGeometryShader(*producer.program, *programResults.back(), localDevice->Target(), localDevice->GeometryLimits()));
+        stages.insert(stages.end() - 1, Graphics::CompiledShader{Stage::Geometry, &results.back(), 0});
     }
     std::vector<Graphics::GuestMemorySnapshot> snapshots;
     const auto snapshot = [&] {

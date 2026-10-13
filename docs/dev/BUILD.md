@@ -218,3 +218,17 @@ ctest --test-dir build -R '^guest_address_signal$' --repeat until-fail:10 --outp
 ```
 
 On Windows also build `guest_raise_nested_sleep_tests` and `guest_mutex_raise_exception_tests`, then run `ctest --test-dir build -R '^guest_(raise_nested_sleep|mutex_raise_exception)$' --output-on-failure`. The fork's Module portability workflow runs these checks on independent Windows and Linux runners. The stress test delivers 800 guest signals while eight threads wait and wake addresses; each handler re-enters address synchronization and parks until all threads acknowledge the round. A deterministic nested-lock test also verifies that sending returns while both locks remain held and that the handler runs only after the outer lock is released. This tests synchronization behavior, not game framerate or complete title compatibility.
+
+
+### Tessellated barycentric rendering regression
+
+After the standard `BUILD_TESTING=ON` configuration on Windows or Linux:
+
+```sh
+cmake --build build --target agc_driver_shader_signal_tests agc_driver_prepared_publication_tests agc_driver_graphics_tests agc_driver_tessellation_tests agc_driver_pixel_barycentric_emulation_tests
+ctest --test-dir build -R '^agc_driver_(shader_signal|prepared_publication|graphics|tessellation|pixel_barycentric_emulation)$' --output-on-failure
+```
+
+Set `ANYPS5_REQUIRE_VULKAN=1` for the rendering tests to fail when Vulkan is unavailable instead of skipping. PowerShell uses `$env:ANYPS5_REQUIRE_VULKAN='1'`; a POSIX shell uses `export ANYPS5_REQUIRE_VULKAN=1`. The device must support geometry and triangular tessellation shaders. On Linux a Vulkan software ICD such as Mesa Lavapipe can run these checks without a physical GPU. The tessellation fixture forces the barycentric extension off, checks perspective-center and linear-center weights against reference pixels, and verifies that a zero-level patch remains empty. Existing vertex-only barycentric cases remain covered. These are rendering correctness checks, not gameplay or performance benchmarks.
+
+The `agc_driver_shader_signal` test needs no GPU. It sends a guest signal during nested shader preparation, checks that delivery waits for the outermost writer unlock, and re-enters preparation from the handler after commit and rollback. Run it with `ctest --test-dir build -R '^agc_driver_shader_signal$' --repeat until-fail:10 --output-on-failure`.
