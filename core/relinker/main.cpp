@@ -140,6 +140,27 @@ int Run(const int argc, char* argv[]) {
             for (const auto& path : registryPaths) checkOutputInputs(path, "Registry");
         }
 
+        std::vector<std::filesystem::path> originalModulePaths;
+        for (const auto& artifact : guestArtifacts) {
+            const auto original = artifact.Path.parent_path() / artifact.SourcePath.filename();
+            const auto normalized = std::filesystem::absolute(original).lexically_normal();
+            const auto collides = [&](const std::filesystem::path& output) {
+                return normalized == std::filesystem::absolute(output).lexically_normal() ||
+                    (std::filesystem::exists(original) && std::filesystem::exists(output) && std::filesystem::equivalent(original, output));
+            };
+            if (collides(Io::NativePath(absPath)) ||
+                std::any_of(guestArtifacts.begin(), guestArtifacts.end(), [&](const auto& other) { return collides(other.Path); }) ||
+                std::any_of(registryPaths.begin(), registryPaths.end(), collides) ||
+                (desktopEntry && (collides(desktopEntry->IconPath) || collides(desktopEntry->EntryPath))) ||
+                (args.windowsDiagnostics && collides(std::filesystem::absolute("windows-diagnostics-imports.txt"))))
+                throw Domain::RelinkerException("Original guest module conflicts with an output: " + Io::Utf8Path(original));
+            if (std::filesystem::exists(original) &&
+                !std::filesystem::equivalent(artifact.SourcePath, original) &&
+                (!std::filesystem::is_regular_file(original) || fileReader.Read(Io::Utf8Path(original)) != fileReader.Read(Io::Utf8Path(artifact.SourcePath))))
+                throw Domain::RelinkerException("Original guest module conflicts with an existing file: " + Io::Utf8Path(original));
+            originalModulePaths.push_back(original);
+        }
+
         auto byteWriter = std::make_shared<Io::ByteWriter>();
 
         std::shared_ptr<Elfpatcher::IElfPatcher> patcher;
@@ -166,8 +187,12 @@ int Run(const int argc, char* argv[]) {
             error.InputPath = args.inputPath;
             throw;
         }
-        for (const auto& artifact : guestArtifacts) {
+        for (std::size_t index = 0; index < guestArtifacts.size(); ++index) {
+            const auto& artifact = guestArtifacts[index];
+            const auto& original = originalModulePaths[index];
             std::filesystem::create_directories(artifact.Path.parent_path());
+            if (!std::filesystem::exists(original)) std::filesystem::copy_file(artifact.SourcePath, original);
+            std::cout << "Original guest module: " << Io::Utf8Path(original) << '\n';
             fileWriter.Write(Io::Utf8Path(artifact.Path), artifact.Bytes);
             std::cout << "Guest module: " << Io::Utf8Path(artifact.Path) << '\n';
         }

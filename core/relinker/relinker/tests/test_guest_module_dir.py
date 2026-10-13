@@ -72,6 +72,7 @@ def main():
                 assert "__aps5_guest_initialize" in pe_export_names(artifact.read_bytes())
                 (case / "sce_module" / "bundled.prx").write_bytes(module_with_symbol(True))
                 (plugins / "plugin.prx").write_bytes(module_with_symbol(True).replace(b"shared#A#B", b"plugin#A#B"))
+                (artifact.parent / "plugin.prx").unlink()
                 result, output = convert(case, windows, ["--module-dir", "Media/Plugins"])
                 assert result.returncode == 0, (result.stdout, result.stderr)
                 bundled = case / "app0" / "sce_module" / "bundled.prx.guest.prx"
