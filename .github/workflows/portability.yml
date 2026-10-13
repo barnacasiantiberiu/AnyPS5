@@ -39,9 +39,9 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
+      - name: Check runner Python prerequisite
+        shell: bash
+        run: python -c "import sys; assert sys.version_info >= (3, 10), 'Python 3.10 or newer is required'; print(sys.version)"
       - name: Install Linux build prerequisites
         if: runner.os == 'Linux'
         run: |
@@ -72,7 +72,7 @@ jobs:
           python tools/test_modules.py --build-dir build --output-dir build/portability --module libSceAudioIn --module libSceContentExport --module libSceContentDelete --build-target guest_audio_in_tests --build-target guest_audio_in_modes_tests --build-target guest_content_export_tests --build-target guest_content_delete_tests
       - name: Upload validation evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         with:
           name: portability-${{ matrix.os }}
           path: |
