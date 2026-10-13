@@ -194,7 +194,7 @@ static void InvalidArguments() {
     REQUIRE(kevent_nid_postfix(queue, &change, 1, &event, 1, &Poll) == 0);
     change = Event(9, -32768, Add | Receipt);
     REQUIRE(kevent_nid_postfix(queue, &change, 1, &event, 1, &Poll) == 1 && event.flags == Error && event.data == 22);
-    change = Event(9, -4, Add);
+    change = Event(9, -5, Add);
     bool rejected = false;
     try {
         kevent_nid_postfix(queue, &change, 1, nullptr, 0, nullptr);

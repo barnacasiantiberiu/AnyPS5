@@ -3,9 +3,11 @@
 
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -17,6 +19,7 @@
 
 static constexpr int16_t EVFILT_READ = -1;
 static constexpr int16_t EVFILT_WRITE = -2;
+static constexpr int16_t EVFILT_VNODE = -4;
 static constexpr int16_t EVFILT_TIMER = -7;
 static constexpr int16_t EVFILT_USER = -11;
 static constexpr int16_t EVFILT_VIDEO_OUT = -13;
@@ -31,6 +34,8 @@ static constexpr uint16_t EV_ONESHOT = 0x0010;
 static constexpr uint16_t EV_CLEAR = 0x0020;
 static constexpr uint16_t EV_RECEIPT = 0x0040;
 static constexpr uint16_t EV_DISPATCH = 0x0080;
+static constexpr uint16_t EV_FORCEONESHOT = 0x0100;
+static constexpr uint16_t EV_SYSFLAGS = 0xF000;
 static constexpr uint16_t EV_ERROR = 0x4000;
 static constexpr uint16_t EV_EOF = 0x8000;
 
@@ -65,7 +70,7 @@ struct KernelEqueueEvent {
 
 class KernelEqueuePrivate {
 public:
-    explicit KernelEqueuePrivate(KernelEqueue handle);
+    explicit KernelEqueuePrivate(KernelEqueue handle, bool reportOncePerWait = false);
     ~KernelEqueuePrivate();
 
     KernelEqueuePrivate(const KernelEqueuePrivate&) = delete;
@@ -78,6 +83,8 @@ public:
     int ChangeEvent(const KernelEvent& change);
     int TriggerEvent(uintptr_t ident, int16_t filter, void* triggerData);
     int DeleteEvent(uintptr_t ident, int16_t filter);
+    bool HasEvent(uintptr_t ident, int16_t filter);
+    int EditEvent(uintptr_t ident, int16_t filter, const std::function<void(KernelEqueueEvent&)>& edit);
     int GetTriggeredEvents(KernelEvent* ev, int num);
     int PollReadiness();
     int WaitForEvents(KernelEvent* ev, int num, uint32_t micros);
@@ -88,8 +95,9 @@ public:
 
 private:
     void TriggerExpiredTimers(uint64_t nowNs);
-    int CollectTriggered(KernelEvent* ev, int num);
     bool NextTimerWaitMicros(uint64_t nowNs, uint32_t* out) const;
+    int CollectTriggered(KernelEvent* ev, int num);
+    int CollectOncePerWait(KernelEvent* ev, int num);
     bool PollEvents();
     void WakePollers();
     void WaitForDescriptors(std::unique_lock<std::mutex>& lock, std::uint64_t deadlineNanos);
@@ -100,11 +108,18 @@ private:
     TimedWait::Condition m_cond;
     std::string m_name;
     KernelEqueue m_handle;
+    bool m_reportOncePerWait;
     bool m_closed = false;
 };
 
 using KernelEqueueRef = std::shared_ptr<KernelEqueuePrivate>;
 void EqueueDescriptorClosed(int descriptor);
+std::optional<std::uint64_t> TimerPeriodNanos_nid_no_patch(std::int64_t data, std::uint32_t fflags);
+bool IsKqueueDescriptor(int descriptor);
+KernelEqueueEvent EqueueDescriptorEvent(int descriptor, int16_t filter, uint16_t flags, void* udata);
+void RequireVnodeNotes(uint32_t fflags);
+void SetVnodeNotes(KernelEqueueEvent& event, uint32_t fflags);
+int AddVnodeEvent(const KernelEqueueRef& queue, int descriptor, uint32_t fflags, uint16_t flags, void* udata);
 extern "C" {
 
 KernelEqueueRef EqueuePin_nid_postfix(KernelEqueue eq);

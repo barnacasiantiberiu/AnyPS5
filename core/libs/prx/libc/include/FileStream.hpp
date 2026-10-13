@@ -13,6 +13,7 @@
 #include "prx/libc/include/HostDescriptorFork.hpp"
 #ifdef _WIN32
 #include <io.h>
+#include "prx/libc/include/FileLock.hpp"
 #endif
 
 struct GuestFilePrefix {
@@ -78,6 +79,7 @@ public:
 #ifdef _WIN32
         std::wstring wideMode;
         for (const char character : std::string_view(mode)) wideMode.push_back(static_cast<unsigned char>(character));
+        GuestFileLockForget_nid_no_patch(::_fileno(previous));
         _handle = ::_wfreopen(filename.c_str(), wideMode.c_str(), previous);
 #else
         _handle = std::freopen(filename.c_str(), mode, previous);
@@ -127,6 +129,9 @@ public:
     int Close() {
         HostDescriptorOperation operation;
         GetHandle();
+#ifdef _WIN32
+        GuestFileLockForget_nid_no_patch(::_fileno(_handle));
+#endif
         const int result = std::fclose(std::exchange(_handle, nullptr));
         _guest.flags = 0;
         _guest.descriptor = -1;

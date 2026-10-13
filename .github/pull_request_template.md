@@ -5,13 +5,14 @@
 <!-- OS, title or homebrew, what was checked. Implementation completion requires passing PC functional tests; "Not tested" does not establish completion. -->
 <!-- System-library completion requires passing PC functional tests. Record the command/result and distinguish implemented-export counts from test coverage. -->
 <!-- When setup, dependencies or packaging change, report their validation commands/results, skips and host limitations. State whether setup was checked from a clean checkout or reused an existing installation. -->
+<!-- Performance changes include main and PR summary lines from the same machine and scene, with traces captured as described in the Performance report issue form. -->
 
 ### Checklist
 <!-- Rules behind each item: https://github.com/barnacasiantiberiu/AnyPS5/blob/main/CONTRIBUTING.md -->
 - [ ] Based on current `main`; no other open PR implements the same functions
 - [ ] One topic per PR; follow-ups go in a new PR
 - [ ] No comments in code except [technical debt](https://github.com/boykopovar/AnyPS5/blob/main/docs/dev/CONVENTIONS.md)
-- [ ] Unimplemented paths throw (`NotImplemented_nid_no_patch`); silent stubs are listed in [TechnicalDebt](https://github.com/boykopovar/AnyPS5/blob/main/docs/dev/TechnicalDebt.md#silent-stubs)
+- [ ] Unimplemented paths throw (`NotImplemented_nid_no_patch`); silent stubs are listed under Silent stubs in their library's [technical debt](https://github.com/boykopovar/AnyPS5/tree/main/docs/dev/debt) file
 - [ ] No notes, investigation `.md` files or images added to the repository (attach them to this PR)
 - [ ] New third-party code is a submodule built from source
 - [ ] Required source, setup, tests, packaging and documentation are included with the implementation; dependencies are pinned and reproducible

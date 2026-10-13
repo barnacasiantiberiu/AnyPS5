@@ -4,6 +4,7 @@
 #include "prx/libkernel/Socket/include/SocketRuntime.hpp"
 #include "prx/libkernel/Equeue/DescriptorEvents.hpp"
 #include "prx/libkernel/File/include/DescriptorControl.hpp"
+#include "prx/libkernel/File/include/File.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/GuestProcess.hpp"
 #include "prx/libc/include/HostDescriptorFork.hpp"
@@ -39,7 +40,6 @@ static int PosixError(int error) {
 static bool UnsupportedFilter(std::int16_t filter) {
     switch (filter) {
         case -3:
-        case -4:
         case -5:
         case -6:
         case -8:
@@ -81,7 +81,7 @@ static void RegisterEqueueForkHooks() {
 
 extern "C" {
 
-KernelEqueuePrivate::KernelEqueuePrivate(KernelEqueue handle) : m_handle(handle) {}
+KernelEqueuePrivate::KernelEqueuePrivate(KernelEqueue handle, bool reportOncePerWait) : m_handle(handle), m_reportOncePerWait(reportOncePerWait) {}
 
 KernelEqueuePrivate::~KernelEqueuePrivate() {
     Close();
@@ -202,6 +202,9 @@ int KernelEqueuePrivate::PollReadiness() {
 }
 
 int KernelEqueuePrivate::CollectTriggered(KernelEvent* ev, int num) {
+    if (m_reportOncePerWait) {
+        return CollectOncePerWait(ev, num);
+    }
     int ret = 0;
     for (auto it = m_events.begin(); it != m_events.end() && ret < num;) {
         auto& e = *it;
@@ -230,6 +233,42 @@ int KernelEqueuePrivate::CollectTriggered(KernelEvent* ev, int num) {
         if (erase && e.filter.deleteEventFunc) e.filter.deleteEventFunc(m_handle, &e);
         it = erase ? m_events.erase(it) : std::next(it);
     }
+    return ret;
+}
+
+int KernelEqueuePrivate::CollectOncePerWait(KernelEvent* ev, int num) {
+    int ret = 0;
+    std::list<KernelEqueueEvent> requeued;
+    for (auto it = m_events.begin(); it != m_events.end() && ret < num;) {
+        auto& e = *it;
+        if (!e.enabled || !e.triggered) {
+            ++it;
+            continue;
+        }
+        ev[ret++] = e.event;
+        if ((e.event.flags & EV_ONESHOT) != 0) {
+            if (e.filter.deleteEventFunc != nullptr) {
+                auto owner = e.filter.owner;
+                e.filter.deleteEventFunc(m_handle, &e);
+            }
+            it = m_events.erase(it);
+            continue;
+        }
+        if (e.filter.resetFunc != nullptr) {
+            e.filter.resetFunc(&e);
+        } else if ((e.event.flags & EV_CLEAR) != 0) {
+            e.triggered = false;
+            e.event.fflags = 0;
+            e.event.data = 0;
+        }
+        if (e.event.flags & EV_DISPATCH) e.enabled = false;
+        const auto next = std::next(it);
+        if (e.triggered) {
+            requeued.splice(requeued.end(), m_events, it);
+        }
+        it = next;
+    }
+    m_events.splice(m_events.end(), requeued);
     return ret;
 }
 
@@ -318,6 +357,7 @@ int KernelEqueuePrivate::ChangeEvent(const KernelEvent& change) {
     constexpr std::uint32_t UserMask = 0x00ffffff;
     constexpr std::uint32_t Trigger = 0x01000000;
     constexpr std::uint16_t AcceptedFlags = EV_ADD | EV_DELETE | EV_ENABLE | EV_DISABLE | EV_ONESHOT | EV_CLEAR | EV_RECEIPT | EV_DISPATCH;
+    if ((change.flags & EV_ENABLE) && (change.flags & EV_DISABLE)) return SCE_KERNEL_ERROR_EINVAL;
     if ((change.flags & ~AcceptedFlags) != 0) return SCE_KERNEL_ERROR_EINVAL;
     if (UnsupportedFilter(change.filter)) NotImplemented_nid_no_patch("kevent: filter runtime integration");
     if (change.filter != EVFILT_READ && change.filter != EVFILT_WRITE && change.filter != EVFILT_TIMER && change.filter != EVFILT_USER)
@@ -326,7 +366,7 @@ int KernelEqueuePrivate::ChangeEvent(const KernelEvent& change) {
     if (change.flags & EV_DELETE) return DeleteEvent(change.ident, change.filter);
     KernelEqueueEvent prepared{};
     prepared.event = change;
-    prepared.event.flags &= EV_ONESHOT | EV_CLEAR | EV_DISPATCH;
+    prepared.event.flags &= EV_ONESHOT | EV_CLEAR | EV_DISPATCH | EV_RECEIPT;
     prepared.enabled = (change.flags & EV_DISABLE) == 0;
     if (change.flags & EV_ADD) {
         if (change.filter == EVFILT_READ || change.filter == EVFILT_WRITE) {
@@ -336,11 +376,12 @@ int KernelEqueuePrivate::ChangeEvent(const KernelEvent& change) {
             prepared.event.data = 0;
             prepared.filter.resetFunc = [](KernelEqueueEvent* event) { event->triggered = false; };
         } else if (change.filter == EVFILT_TIMER) {
-            if (change.data < 0 || change.fflags != 0) return SCE_KERNEL_ERROR_EINVAL;
+            if (change.data < 0 || (change.fflags & ~15u) != 0) return SCE_KERNEL_ERROR_EINVAL;
             const auto now = MonotonicNs();
             const auto limit = std::numeric_limits<std::uint64_t>::max();
-            const auto milliseconds = static_cast<std::uint64_t>(change.data);
-            const auto interval = milliseconds > (limit - now) / 1000000 ? limit - now : std::max<std::uint64_t>(1, milliseconds) * 1000000;
+            const auto period = TimerPeriodNanos_nid_no_patch(change.data == 0 && !(change.flags & EV_ONESHOT) ? 1 : change.data, change.fflags);
+            if (!period) return SCE_KERNEL_ERROR_EINVAL;
+            const auto interval = std::min(*period, limit - now);
             prepared.intervalNs = (change.flags & EV_ONESHOT) ? 0 : interval;
             prepared.deadlineNs = now + interval;
             prepared.event.flags |= EV_CLEAR;
@@ -411,6 +452,32 @@ int KernelEqueuePrivate::TriggerEvent(uintptr_t ident, int16_t filter, void* tri
     return EQUEUE_OK;
 }
 
+bool KernelEqueuePrivate::HasEvent(uintptr_t ident, int16_t filter) {
+    std::unique_lock lock(m_mutex);
+    return std::any_of(m_events.begin(), m_events.end(), [ident, filter](const auto& e) {
+        return e.event.ident == ident && e.event.filter == filter;
+    });
+}
+
+int KernelEqueuePrivate::EditEvent(uintptr_t ident, int16_t filter, const std::function<void(KernelEqueueEvent&)>& edit) {
+    std::unique_lock lock(m_mutex);
+    if (m_closed) {
+        return SCE_KERNEL_ERROR_EBADF;
+    }
+    auto it = std::find_if(m_events.begin(), m_events.end(),
+        [ident, filter](const auto& e) {
+            return e.event.ident == ident && e.event.filter == filter;
+        }
+    );
+    if (it == m_events.end()) {
+        return SCE_KERNEL_ERROR_ENOENT;
+    }
+    edit(*it);
+    m_cond.NotifyOne();
+    WakePollers();
+    return EQUEUE_OK;
+}
+
 int KernelEqueuePrivate::DeleteEvent(uintptr_t ident, int16_t filter) {
     std::unique_lock lock(m_mutex);
     if (m_closed) {
@@ -435,10 +502,20 @@ int KernelEqueuePrivate::DeleteEvent(uintptr_t ident, int16_t filter) {
 
 void KernelEqueuePrivate::RemoveDescriptorEvents(uintptr_t ident) {
     std::unique_lock lock(m_mutex);
-    const auto removed = std::erase_if(m_events, [ident](const auto& e) {
-        return e.event.ident == ident && (e.event.filter == EVFILT_READ || e.event.filter == EVFILT_WRITE);
-    });
-    if (removed != 0) {
+    bool removed = false;
+    for (auto it = m_events.begin(); it != m_events.end();) {
+        if (it->event.ident != ident || (it->event.filter != EVFILT_READ && it->event.filter != EVFILT_WRITE && it->event.filter != EVFILT_VNODE)) {
+            ++it;
+            continue;
+        }
+        if (it->filter.deleteEventFunc != nullptr) {
+            auto owner = it->filter.owner;
+            it->filter.deleteEventFunc(m_handle, &*it);
+        }
+        it = m_events.erase(it);
+        removed = true;
+    }
+    if (removed) {
         WakePollers();
     }
 }
@@ -487,7 +564,7 @@ int APS5_VABI kqueue_nid_postfix() {
 #endif
     if (descriptor < 0) return PosixError(errno == EMFILE ? 24 : errno == ENFILE ? 23 : errno == ENOMEM ? 12 : 5);
     try {
-        auto owner = std::make_shared<KernelEqueuePrivate>(0);
+        auto owner = std::make_shared<KernelEqueuePrivate>(0, true);
         File::RememberDescriptor(descriptor, 2);
         std::lock_guard lock(g_equeueMutex);
         g_descriptorQueues.emplace(descriptor, std::move(owner));
@@ -529,11 +606,44 @@ int APS5_VABI kevent_nid_postfix(int descriptor, const KernelEvent* changes, int
                 NotImplemented_nid_no_patch("kevent: descriptor EV_CLEAR notifications");
             if (change.filter == EVFILT_WRITE && change.ident >= GuestSockets::FirstDescriptor && (change.fflags & 1) && change.data > 1)
                 NotImplemented_nid_no_patch("kevent: socket write low watermark");
-            const int result = owner->ChangeEvent(change);
+            int result = 0;
+            if (change.filter == EVFILT_VNODE) {
+                constexpr std::uint16_t accepted = EV_ADD | EV_DELETE | EV_ENABLE | EV_DISABLE | EV_ONESHOT | EV_CLEAR | EV_RECEIPT | EV_DISPATCH;
+                if ((change.flags & ~accepted) != 0 || ((change.flags & EV_ENABLE) && (change.flags & EV_DISABLE))) result = SCE_KERNEL_ERROR_EINVAL;
+                else if (change.ident > static_cast<std::uintptr_t>(INT32_MAX) || !(change.ident >= GuestSockets::FirstDescriptor ? GuestSockets::IsOpen(static_cast<int>(change.ident)) : DescriptorIsOpen_nid_no_patch(static_cast<int>(change.ident)))) result = SCE_KERNEL_ERROR_EBADF;
+                else if (change.flags & EV_DELETE) result = owner->DeleteEvent(change.ident, change.filter);
+                else if (change.flags & EV_ADD) {
+                    RequireVnodeNotes(change.fflags);
+                    result = owner->EditEvent(change.ident, change.filter, [&](KernelEqueueEvent& event) {
+                        SetVnodeNotes(event, change.fflags);
+                        event.event.udata = change.udata;
+                    });
+                    if (result == SCE_KERNEL_ERROR_ENOENT) {
+                        const int error = AddVnodeEvent(owner, static_cast<int>(change.ident), change.fflags, change.flags & (EV_CLEAR | EV_ONESHOT | EV_DISPATCH | EV_RECEIPT), change.udata);
+                        result = error == 0 ? 0 : SceKernelError(error);
+                    }
+                    if (result == 0) result = owner->EditEvent(change.ident, change.filter, [&](KernelEqueueEvent& event) {
+                        event.enabled = (change.flags & EV_DISABLE) == 0;
+                    });
+                }
+                else {
+                    RequireVnodeNotes(change.fflags);
+                    result = owner->EditEvent(change.ident, change.filter, [&](KernelEqueueEvent& event) {
+                        SetVnodeNotes(event, change.fflags);
+                        event.event.udata = change.udata;
+                        if (change.flags & EV_DISABLE) event.enabled = false;
+                        if (change.flags & EV_ENABLE) event.enabled = true;
+                    });
+                }
+            } else if ((change.filter == EVFILT_READ || change.filter == EVFILT_WRITE) &&
+                (change.ident > static_cast<std::uintptr_t>(INT32_MAX) || !(change.ident >= GuestSockets::FirstDescriptor ? GuestSockets::IsOpen(static_cast<int>(change.ident)) : DescriptorIsOpen_nid_no_patch(static_cast<int>(change.ident))))) result = SCE_KERNEL_ERROR_EBADF;
+            else if ((change.filter == EVFILT_READ || change.filter == EVFILT_WRITE) && change.ident == static_cast<std::uintptr_t>(descriptor)) result = SCE_KERNEL_ERROR_EINVAL;
+            else result = owner->ChangeEvent(change);
             if (result != 0 || (change.flags & EV_RECEIPT)) {
                 if (receipts == eventCount) return result != 0 ? PosixError(result & 0xffff) : 0;
                 events[receipts] = change;
                 events[receipts].flags = EV_ERROR;
+                if (result == 0) events[receipts].fflags = 0;
                 events[receipts++].data = result & 0xffff;
             }
         }
@@ -792,6 +902,28 @@ int APS5_VABI sceKernelDeleteWriteEvent(KernelEqueue eq, int fd) {
     return EqueueDeleteEvent_nid_postfix(eq, static_cast<uintptr_t>(fd), EVFILT_WRITE);
 }
 
+}
+
+KernelEqueueEvent EqueueDescriptorEvent(int descriptor, int16_t filter, uint16_t flags, void* udata) {
+    KernelEqueueEvent event{};
+    event.event.ident = static_cast<uintptr_t>(descriptor);
+    event.event.filter = filter;
+    event.event.flags = flags;
+    event.event.udata = udata;
+    event.filter.pollFunc = [](KernelEqueueEvent* e) {
+        std::int64_t data = 0;
+        bool eof = false;
+        if (!GuestSockets::Ready(static_cast<int>(e->event.ident), e->event.filter == EVFILT_WRITE, &data, &eof)) {
+            return false;
+        }
+        e->event.data = static_cast<intptr_t>(data);
+        e->event.flags = static_cast<uint16_t>(eof ? (e->event.flags | EV_EOF) : (e->event.flags & ~EV_EOF));
+        return true;
+    };
+    event.filter.resetFunc = [](KernelEqueueEvent* e) {
+        e->triggered = false;
+    };
+    return event;
 }
 
 void EqueueDescriptorClosed(int descriptor) {
