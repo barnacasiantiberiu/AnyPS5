@@ -13,6 +13,7 @@
 #include "SpirvBackend/SpirvSpecialization.hpp"
 #include "RdnaDecoder/RdnaDescriptorFormat.hpp"
 #include "ShaderDiskCache.hpp"
+#include "SpecializationCache.hpp"
 #include <list>
 #include <functional>
 #include <map>
@@ -624,8 +625,7 @@ struct PreparedBindingPlan {
     std::once_flag ready;
     std::exception_ptr failure;
     DescriptorBindingPlan bindings;
-    PrimedSharedMutex mutex;
-    std::map<std::vector<std::uint32_t>, std::shared_ptr<PreparedModuleEntry>> modules;
+    const std::uint64_t cacheId = nextVariantId();
 };
 
 struct RegistrationModuleEntry {
@@ -637,25 +637,17 @@ struct RegistrationModuleEntry {
 std::shared_ptr<const SpecializedModule> registrationModule(std::uint64_t variantId, std::span<const std::uint32_t> moduleKey, const std::function<std::shared_ptr<const SpecializedModule>()>& specialize) {
     std::vector<std::uint64_t> key{variantId};
     key.insert(key.end(), moduleKey.begin(), moduleKey.end());
-    static std::shared_mutex mutex;
-    static std::map<std::vector<std::uint64_t>, std::shared_ptr<RegistrationModuleEntry>> modules;
-    std::shared_ptr<RegistrationModuleEntry> entry;
-    {
-        std::shared_lock lock(mutex);
-        if (const auto found = modules.find(key); found != modules.end()) entry = found->second;
-    }
-    if (entry == nullptr) {
-        std::unique_lock lock(mutex);
-        const auto found = modules.find(key);
-        entry = found != modules.end() ? found->second : modules.emplace(key, std::make_shared<RegistrationModuleEntry>()).first->second;
-    }
+    static BudgetedShaderCache<std::vector<std::uint64_t>, RegistrationModuleEntry> modules(SpecializationCacheLimit(SpecializationCachePart::Registration));
+    const auto entry = modules.GetOrCreate(key);
     std::call_once(entry->ready, [&] {
         try {
             entry->module = specialize();
         } catch (...) {
             entry->failure = std::current_exception();
         }
+        if (modules.Bounded()) modules.Complete(key, entry, AddCacheBytes(sizeof(RegistrationModuleEntry), SpecializedModuleAllocationBytes(entry->module)));
     });
+    ReportSpecializationCache(modules, "registration");
     if (entry->failure) std::rethrow_exception(entry->failure);
     return entry->module;
 }
@@ -687,25 +679,17 @@ std::shared_ptr<PreparedBindingPlan> preparedBindingPlan(const CompiledVariant& 
     }
     key.push_back(exports.size());
     for (const auto mapping : exports) key.push_back(mapping);
-    static PrimedSharedMutex mutex;
-    static std::map<std::vector<std::uint64_t>, std::shared_ptr<PreparedBindingPlan>> plans;
-    std::shared_ptr<PreparedBindingPlan> plan;
-    {
-        std::shared_lock lock(mutex);
-        if (const auto found = plans.find(key); found != plans.end()) plan = found->second;
-    }
-    if (plan == nullptr) {
-        std::unique_lock lock(mutex);
-        const auto found = plans.find(key);
-        plan = found != plans.end() ? found->second : plans.emplace(key, std::make_shared<PreparedBindingPlan>()).first->second;
-    }
+    static BudgetedShaderCache<std::vector<std::uint64_t>, PreparedBindingPlan> plans(SpecializationCacheLimit(SpecializationCachePart::Plans));
+    const auto plan = plans.GetOrCreate(key);
     std::call_once(plan->ready, [&] {
         try {
             plan->bindings = DescriptorBindingBuilder{}.Prepare(variant.bindings.layout, variant.info.info, variant.info.stage, snapshot, exports, variant.artifact.registrationModule, fragmentDescriptorSet);
         } catch (...) {
             plan->failure = std::current_exception();
         }
+        if (plans.Bounded()) plans.Complete(key, plan, AddCacheBytes(sizeof(PreparedBindingPlan), DescriptorPlanAllocationBytes(plan->bindings)));
     });
+    ReportSpecializationCache(plans, "plans");
     if (plan->failure) std::rethrow_exception(plan->failure);
     return plan;
 }
@@ -716,25 +700,17 @@ std::shared_ptr<const SpecializedModule> specializeModule(const CompiledShaderAr
     key.clear();
     key.push_back(artifact.variantId);
     for (const auto& constant : constants) key.push_back((static_cast<std::uint64_t>(constant.id) << 32u) | constant.value);
-    static PrimedSharedMutex mutex;
-    static std::map<std::vector<std::uint64_t>, std::shared_ptr<SpecializedModuleEntry>> modules;
-    std::shared_ptr<SpecializedModuleEntry> entry;
-    {
-        std::shared_lock lock(mutex);
-        if (const auto found = modules.find(key); found != modules.end()) entry = found->second;
-    }
-    if (entry == nullptr) {
-        std::unique_lock lock(mutex);
-        const auto found = modules.find(key);
-        entry = found != modules.end() ? found->second : modules.emplace(key, std::make_shared<SpecializedModuleEntry>()).first->second;
-    }
+    static BudgetedShaderCache<std::vector<std::uint64_t>, SpecializedModuleEntry> modules(SpecializationCacheLimit(SpecializationCachePart::Modules));
+    const auto entry = modules.GetOrCreate(key);
     std::call_once(entry->ready, [&] {
         try {
             entry->module = buildSpecializedModule(artifact, classes, constants, target);
         } catch (...) {
             entry->failure = std::current_exception();
         }
+        if (modules.Bounded()) modules.Complete(key, entry, AddCacheBytes(sizeof(SpecializedModuleEntry), SpecializedModuleAllocationBytes(entry->module)));
     });
+    ReportSpecializationCache(modules, "modules");
     if (entry->failure) std::rethrow_exception(entry->failure);
     return entry->module;
 }
@@ -804,15 +780,13 @@ RecompileResult materializeResult(const CompiledVariant& variant, const Recompil
         }
     }
     if (!plan->bindings.specialization.empty() || variant.bindings.layout.UsesPushData() || !artifact.vertexInputPatches.empty() || request.context.pixel) {
-        {
-            std::shared_lock lock(plan->mutex);
-            if (const auto found = plan->modules.find(moduleKey); found != plan->modules.end()) entry = found->second;
-        }
-        if (entry == nullptr) {
-            std::unique_lock lock(plan->mutex);
-            const auto found = plan->modules.find(moduleKey);
-            entry = found != plan->modules.end() ? found->second : plan->modules.emplace(moduleKey, std::make_shared<PreparedModuleEntry>()).first->second;
-        }
+        struct PreparedModuleCacheKeyStorage {};
+        auto& preparedKey = HostThreadLocal<std::vector<std::uint64_t>, PreparedModuleCacheKeyStorage>();
+        preparedKey.clear();
+        preparedKey.push_back(plan->cacheId);
+        preparedKey.insert(preparedKey.end(), moduleKey.begin(), moduleKey.end());
+        static BudgetedShaderCache<std::vector<std::uint64_t>, PreparedModuleEntry> preparedModules(SpecializationCacheLimit(SpecializationCachePart::Prepared));
+        entry = preparedModules.GetOrCreate(preparedKey);
         const auto prepare = [&] {
             auto constants = plan->bindings.specialization;
             std::size_t index = 0;
@@ -843,7 +817,12 @@ RecompileResult materializeResult(const CompiledVariant& variant, const Recompil
             } catch (...) {
                 entry->failure = std::current_exception();
             }
+            if (preparedModules.Bounded()) {
+                const auto bytes = AddCacheBytes(sizeof(PreparedModuleEntry), AddCacheBytes(DescriptorPlanAllocationBytes(entry->bindings), SpecializedModuleAllocationBytes(entry->module)));
+                preparedModules.Complete(preparedKey, entry, bytes);
+            }
         });
+        ReportSpecializationCache(preparedModules, "prepared");
         if (entry->failure) std::rethrow_exception(entry->failure);
         const auto& module = entry->module;
         result.specializationId = module->specializationId;

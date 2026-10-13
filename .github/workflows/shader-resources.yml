@@ -1,0 +1,71 @@
+name: Shader resource regressions
+on:
+  pull_request:
+    branches: [main, codex/shader-efficiency-balanced]
+    paths:
+      - 'core/shader/recompiler/**'
+      - 'core/libs/prx/libSceAgcDriver/**'
+      - 'tools/shader-resource-tests/**'
+      - '.github/workflows/shader-resources.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: shader-resources-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  standalone:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Configure standalone tests
+        run: cmake -S tools/shader-resource-tests -B build-resource-tests -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} -DSHADER_RESOURCE_SANITIZERS=ON
+      - name: Build and execute
+        run: |
+          cmake --build build-resource-tests --parallel 2
+          ctest --test-dir build-resource-tests --output-on-failure --output-junit standalone.xml
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        if: always()
+        with:
+          name: shader-resources-${{ matrix.compiler }}
+          path: build-resource-tests/standalone.xml
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 3
+      CTEST_PARALLEL_LEVEL: 1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++-14 ninja-build mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev libxrandr-dev libx11-dev libxext-dev
+      - name: Configure actual compiler and driver
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 -DANYPS5_ENABLE_SPIRV_TOOLS=ON -DANYPS5_VIDEO_OUT_TEST_DRIVER=offscreen
+      - name: Run isolated configurations on Lavapipe
+        run: |
+          for icd in /usr/share/vulkan/icd.d/lvp_icd*.json; do
+            if [ -f "$icd" ]; then export VK_ICD_FILENAMES="$icd"; break; fi
+          done
+          test -n "${VK_ICD_FILENAMES:-}"
+          cat "$VK_ICD_FILENAMES"
+          python3 tools/shader-resource-tests/run_integration.py --build-dir build --jobs 3
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        if: always()
+        with:
+          name: shader-resources-integration
+          path: |
+            build/shader-resource-reports/
+            build/CMakeCache.txt
+            build/CMakeFiles/CMakeConfigureLog.yaml
