@@ -1,3 +1,4 @@
+#include "prx/libSceAgcDriver/Execution/include/LoadingProgress.hpp"
 #include "Recompiler.hpp"
 #include <algorithm>
 #include <cstring>
@@ -407,6 +408,7 @@ std::uint64_t nextVariantId() {
 }
 
 CompiledVariant compileVariant(const RecompileRequest& request, IrProgram program, std::exception_ptr* emissionFailure = nullptr) try {
+    AnyPS5::Loading::Scope loading(AnyPS5::Loading::Stage::Shader);
     const auto inputInfo = RequestInputInfo(request);
     constexpr DeadCodeEliminator deadCodeEliminator;
     constexpr ResourceMaterializer resourceMaterializer;

@@ -1,0 +1,38 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { LoadingModel, validWork, validWindow } = require('../src/loading-model.cjs');
+const start = 100000;
+const work = (time, extra = {}) => ({ version: 1, updatedAt: time, elapsedMs: time - start, lastCompletedMs: 0, active: [1, 0, 0, 0], completed: 0, failed: 0, ...extra });
+const window = (time, extra = {}) => ({ version: 1, updatedAt: time, frames: 10, focused: true, x: -1000, y: 100, width: 900, height: 600, ...extra });
+test('real activity, long compile, unknown stall, recovery, focus and stale telemetry', () => {
+  const model = new LoadingModel();
+  assert.equal(model.update(work(start), window(start), start).visible, false);
+  let state = model.update(work(start + 1500), window(start + 1500), start + 1500);
+  assert.equal(state.title, 'Compiling shaders');
+  assert.equal(state.animate, true);
+  assert.equal('percent' in state, false);
+  state = model.update(work(start + 2000, { completed: 4, lastCompletedMs: 1900 }), window(start + 2000), start + 2000);
+  assert.equal(state.completed, 4);
+  state = model.update(work(start + 18000), window(start + 18000), start + 18000);
+  assert.equal(state.animate, false);
+  assert.match(state.detail, /No compilation completed/);
+  state = model.update(work(start + 19000, { active: [0, 0, 0, 0] }), window(start + 19000), start + 19000);
+  assert.equal(state.title, 'Waiting for the next frame');
+  assert.match(state.detail, /No active shader compilation/);
+  assert.equal(model.update(work(start + 19000), window(start + 23000), start + 23000).title, 'Progress updates paused');
+  assert.equal(model.update(work(start + 23000), window(start + 23000, { focused: false }), start + 23000).visible, false);
+  assert.equal(model.update(work(start + 23000), window(start + 23000), start + 27000).visible, false);
+  assert.equal(model.update(work(start + 27000), window(start + 27000, { frames: 11 }), start + 27000).visible, false);
+});
+test('no false shader state for missing data or malformed snapshots', () => {
+  const model = new LoadingModel();
+  model.update(null, window(start), start);
+  const state = model.update(null, window(start + 6000), start + 6000);
+  assert.equal(state.title, 'Waiting for the next frame');
+  assert.equal(state.animate, false);
+  assert.equal(model.update(null, null, start).visible, false);
+  assert.equal(validWork(work(start, { active: [-1, 0, 0, 0] })), false);
+  assert.equal(validWork(work(start, { lastCompletedMs: 1 })), false);
+  assert.equal(validWindow(window(start, { width: Infinity })), false);
+  assert.equal(validWindow(window(start, { width: 0 })), false);
+});

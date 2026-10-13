@@ -66,6 +66,7 @@ void DisplayWindow::create(std::uint32_t sourceWidth, std::uint32_t sourceHeight
     SDL_SetWindowMinimumSize(window, static_cast<int>(DisplayWindowMinimumWidth), static_cast<int>(DisplayWindowMinimumHeight));
     applyAppIcon(window);
     installSubclass();
+    loadingWindow.Start(window);
 }
 
 void DisplayWindow::updateAspectRatio(std::uint32_t sourceWidth, std::uint32_t sourceHeight) {
@@ -75,6 +76,7 @@ void DisplayWindow::updateAspectRatio(std::uint32_t sourceWidth, std::uint32_t s
 
 void DisplayWindow::Destroy() noexcept {
     if (window == nullptr) return;
+    loadingWindow.Stop();
     removeSubclass();
     SDL_DestroyWindow(window);
     window = nullptr;
@@ -113,6 +115,7 @@ void DisplayWindow::UpdateTitle() {
     const auto now = sceKernelGetProcessTimeCounter();
     const auto frequency = sceKernelGetProcessTimeCounterFrequency();
     frameNum++;
+    loadingWindow.Presented();
     fpsFrames++;
     if (now - fpsStart >= frequency * 2) {
         currentFps = static_cast<double>(fpsFrames) * static_cast<double>(frequency) / static_cast<double>(now - fpsStart);

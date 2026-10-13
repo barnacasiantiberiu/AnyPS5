@@ -1,3 +1,4 @@
+#include "prx/libSceAgcDriver/Execution/include/LoadingProgress.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/PipelineLibrary.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
 #include <array>
@@ -238,6 +239,7 @@ VkPipeline LinkPipelineFromLibraries(const Context& context, const VkGraphicsPip
         const auto libraryLayout = fullLayout;
         enqueue(store, context.device, [slot, createPipelines, cache, libraryLayout, libraries, &store, devicePointer = &device] {
             if (slot->released.load()) return;
+            AnyPS5::Loading::Scope loading(AnyPS5::Loading::Stage::Library);
             VkPipelineLibraryCreateInfoKHR linked{VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR};
             linked.libraryCount = static_cast<std::uint32_t>(libraries.size());
             linked.pLibraries = libraries.data();
@@ -245,7 +247,10 @@ VkPipeline LinkPipelineFromLibraries(const Context& context, const VkGraphicsPip
             create.flags = VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT;
             create.layout = libraryLayout;
             VkPipeline result = VK_NULL_HANDLE;
-            if (createPipelines(slot->device, cache, 1, &create, nullptr, &result) != VK_SUCCESS) return;
+            if (createPipelines(slot->device, cache, 1, &create, nullptr, &result) != VK_SUCCESS) {
+                loading.Failed();
+                return;
+            }
             slot->handle.store(result);
             if (slot->released.load()) {
                 if (const auto handle = slot->handle.exchange(VK_NULL_HANDLE)) slot->destroy(slot->device, handle, nullptr);

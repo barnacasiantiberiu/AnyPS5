@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include "SDL.h"
+#include "LoadingWindow.hpp"
 
 inline constexpr std::uint32_t DisplayWindowMinimumWidth = 320;
 inline constexpr std::uint32_t DisplayWindowMinimumHeight = 180;
@@ -31,6 +32,7 @@ private:
 
     static std::intptr_t windowProc(void* hwnd, unsigned int message, std::uintptr_t wParam, std::intptr_t lParam, std::uintptr_t subclassId, std::uintptr_t referenceData);
 
+    LoadingWindow loadingWindow;
     SDL_Window* window = nullptr;
     std::uint32_t aspectWidth = 0;
     std::uint32_t aspectHeight = 0;

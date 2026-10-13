@@ -1,3 +1,4 @@
+#include "prx/libSceAgcDriver/Execution/include/LoadingProgress.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Pipeline.hpp"
@@ -490,6 +491,7 @@ Pipeline::Pipeline(const Context& context, const State& state, const VertexInput
             _modules.clear();
             return;
         }
+        AnyPS5::Loading::Scope loading(AnyPS5::Loading::Stage::Graphics);
         if (prebuilding) {
             static_cast<void>(LinkPipelineFromLibraries(context, pipelineInfo, rendering, layoutInfo, keys, &optimized, true, _modules));
             for (const auto module : _modules) context.Function<PFN_vkDestroyShaderModule>("vkDestroyShaderModule")(context.device, module, nullptr);

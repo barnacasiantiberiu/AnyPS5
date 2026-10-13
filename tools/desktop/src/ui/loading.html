@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'">
+<title>AnyPS5 loading status</title>
+<link rel="stylesheet" href="loading.css">
+</head>
+<body>
+<main aria-live="polite">
+  <header><span class="brand">ANY<span>PS5</span></span><span class="badge"><i></i><span id="activity">RENDERER ACTIVITY</span></span></header>
+  <div class="heading"><h1 id="title">Preparing graphics</h1><span id="elapsed">0s</span></div>
+  <p id="detail">Waiting for renderer activity.</p>
+  <div class="track" role="progressbar" aria-label="Compilation activity; total unknown"><div></div></div>
+  <footer><span><strong id="completed">0</strong> compile steps completed</span><span id="note">Total discovered during play</span></footer>
+</main>
+<script src="loading.js"></script>
+</body>
+</html>

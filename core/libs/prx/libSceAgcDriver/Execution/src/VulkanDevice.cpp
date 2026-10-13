@@ -1,3 +1,4 @@
+#include "prx/libSceAgcDriver/Execution/include/LoadingProgress.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/PipelineSpecialization.hpp"
 #include "prx/libSceAgcDriver/Execution/include/CaptureTrace.hpp"
@@ -107,6 +108,7 @@ void CreateComputePipeline(VkDevice device, PFN_vkCreateComputePipelines create,
     subgroup.requiredSubgroupSize = subgroupSize;
     if (subgroupSize != 0) info.stage.pNext = &subgroup;
     info.layout = layout;
+    AnyPS5::Loading::Scope loading(AnyPS5::Loading::Stage::Compute);
     check(create(device, cache, 1, &info, nullptr, pipeline), "vkCreateComputePipelines");
 }
 
