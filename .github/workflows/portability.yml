@@ -70,6 +70,18 @@ jobs:
         run: |
           python tools/tests/test_module_runner.py
           python tools/test_modules.py --build-dir build --output-dir build/portability --module libSceAudioIn --module libSceContentExport --module libSceContentDelete --module libSceGameUpdate --module libSceNgs2.native --module libSceNpEntitlementAccess --module libSceAppContent --module libSceNpCommerce --build-target guest_audio_in_tests --build-target guest_audio_in_modes_tests --build-target guest_content_export_tests --build-target guest_content_delete_tests --build-target guest_gameupdate_tests --build-target ngs2_render_tests --build-target ngs2_atrac9_tests --build-target ngs2_filter_tests --build-target ngs2_custom_tests --build-target ngs2_parse_tests --build-target ngs2_stream_tests --build-target ngs2_userfx_tests --build-target ngs2_report_tests --build-target ngs2_geom_tests --build-target ngs2_core_geom_tests --build-target ngs2_core_report_tests --build-target ngs2_native_geom_apply_tests --build-target ngs2_core_geom_apply_tests --build-target guest_entitlement_tests --build-target guest_appcontent_tests --build-target guest_appcontent_addons_tests --build-target guest_commerce_tests
+      - name: Build kernel signal regression tests
+        shell: bash
+        run: |
+          cmake --build build --target guest_signal_critical_tests guest_address_signal_tests guest_raise_exception_tests guest_sync_on_address_tests guest_umtx_op_tests guest_umtx_semaphore_tests guest_cond_timedwait_tests guest_semaphore_tests
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake --build build --target guest_raise_nested_sleep_tests guest_mutex_raise_exception_tests
+          fi
+      - name: Validate kernel signals and address waits
+        shell: bash
+        run: |
+          ctest --test-dir build -R '^guest_(signal_critical|address_signal|raise_exception|raise_nested_sleep|mutex_raise_exception|sync_on_address|umtx_op|umtx_semaphore|umtx_semaphore_coarse|cond_timedwait|semaphore)$' --output-on-failure --output-junit kernel-signals.xml
+          ctest --test-dir build -R '^guest_address_signal$' --repeat until-fail:10 --output-on-failure --output-junit kernel-signal-stress.xml
       - name: Upload validation evidence
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
@@ -77,6 +89,8 @@ jobs:
           name: portability-${{ matrix.os }}
           path: |
             build/portability/
+            build/kernel-signals.xml
+            build/kernel-signal-stress.xml
             build/CMakeCache.txt
             build/CMakeFiles/CMakeConfigureLog.yaml
           if-no-files-found: warn

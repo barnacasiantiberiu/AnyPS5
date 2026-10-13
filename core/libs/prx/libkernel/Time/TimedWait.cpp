@@ -10,6 +10,9 @@
 #include <windows.h>
 #else
 #include <cerrno>
+#include <csignal>
+#include <pthread.h>
+#include <system_error>
 #include <time.h>
 #endif
 
@@ -23,6 +26,14 @@ constexpr std::uint64_t LEAD_NANOS = 500000ULL;
 struct ThreadWaitState {
     std::atomic<int> own{0};
     std::atomic<int>* bound = &own;
+    std::atomic<int> criticalOwn{0};
+    std::atomic<int>* critical = &criticalOwn;
+    std::atomic<bool> pendingOwn{false};
+    std::atomic<bool>* pending = &pendingOwn;
+#ifndef _WIN32
+    unsigned maskDepth = 0;
+    sigset_t previousMask{};
+#endif
 };
 ThreadWaitState& WaitState() {
 #ifdef _WIN32
@@ -275,9 +286,42 @@ void Condition::NotifyAll() {
 
 #endif
 
-void BindThreadWaitState(std::atomic<int>* state) {
+void EnterSignalCriticalSection() {
+    auto& local = WaitState();
+#ifdef _WIN32
+    local.critical->fetch_add(1, std::memory_order_seq_cst);
+#else
+    sigset_t blocked, previous;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGUSR1);
+    sigaddset(&blocked, SIGUSR2);
+    const int error = pthread_sigmask(SIG_BLOCK, &blocked, &previous);
+    if (error != 0) throw std::system_error(error, std::generic_category(), "Blocking guest signals around a kernel mutex");
+    if (local.maskDepth++ == 0) local.previousMask = previous;
+#endif
+}
+
+void LeaveSignalCriticalSection() {
+    auto& local = WaitState();
+#ifdef _WIN32
+    if (local.critical->fetch_sub(1, std::memory_order_seq_cst) == 1 && local.pending->exchange(false)) DrainApcs();
+#else
+    if (--local.maskDepth == 0) {
+        const auto previous = local.previousMask;
+        if (pthread_sigmask(SIG_SETMASK, &previous, nullptr) != 0) std::terminate();
+    }
+#endif
+}
+
+void BindThreadWaitState(std::atomic<int>* state, std::atomic<int>* criticalState, std::atomic<bool>* pendingState) {
     auto& local = WaitState();
     local.bound = state != nullptr ? state : &local.own;
+    auto* next = criticalState != nullptr ? criticalState : &local.criticalOwn;
+    if (next != local.critical) next->store(local.critical->load());
+    local.critical = next;
+    auto* pending = pendingState != nullptr ? pendingState : &local.pendingOwn;
+    if (pending != local.pending) pending->store(local.pending->load());
+    local.pending = pending;
 }
 
 bool Coarse() {

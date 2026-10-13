@@ -206,3 +206,15 @@ ctest --test-dir build/register-context --output-on-failure
 ```
 
 On Linux x86-64, omit `CMAKE_OSX_ARCHITECTURES`; the full `BUILD_TESTING` build also registers these tests. Apple silicon runs the x86-64 tests through Rosetta. They cover the unwinder's register transfer, not the complete macOS runtime or guest exception handling.
+
+### Kernel signal and address-wait regression
+
+After the standard `BUILD_TESTING=ON` configuration on Windows or Linux:
+
+```sh
+cmake --build build --target guest_signal_critical_tests guest_address_signal_tests guest_raise_exception_tests guest_sync_on_address_tests
+ctest --test-dir build -R '^guest_(signal_critical|address_signal|raise_exception|sync_on_address)$' --output-on-failure
+ctest --test-dir build -R '^guest_address_signal$' --repeat until-fail:10 --output-on-failure
+```
+
+On Windows also build `guest_raise_nested_sleep_tests` and `guest_mutex_raise_exception_tests`, then run `ctest --test-dir build -R '^guest_(raise_nested_sleep|mutex_raise_exception)$' --output-on-failure`. The fork's Module portability workflow runs these checks on independent Windows and Linux runners. The stress test delivers 800 guest signals while eight threads wait and wake addresses; each handler re-enters address synchronization and parks until all threads acknowledge the round. A deterministic nested-lock test also verifies that sending returns while both locks remain held and that the handler runs only after the outer lock is released. This tests synchronization behavior, not game framerate or complete title compatibility.
