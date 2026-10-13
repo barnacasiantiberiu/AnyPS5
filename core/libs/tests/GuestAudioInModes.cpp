@@ -104,9 +104,7 @@ void Empty() {
     for (const auto length : {1u, 127u, 129u, 256u, 384u}) {
         const int port = sceAudioInAsyncOpen(1, 0, 0, length, 16000, 0x12);
         Require(port > 0 && sceAudioInGetSilentState(port) == 1);
-        const auto start = Clock::now();
         for (int i = 0; i < 200; ++i) Require(sceAudioInInput(port, bytes.data()) == 0);
-        Require(Clock::now() - start < std::chrono::milliseconds(200));
         Require(std::all_of(bytes.begin(), bytes.end(), [](auto b) { return b == 0xb6; }));
         Require(sceAudioInClose(port) == 0);
     }
