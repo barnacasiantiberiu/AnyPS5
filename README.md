@@ -10,11 +10,11 @@ Includes a [relinker](core/relinker) that converts executable to the target syst
 
 <!-- anyps5-status:start -->
 
-<!-- Source snapshot: libraries 3212/3593 (89.40%); shaders 1166/1166 (100.00%). -->
+<!-- Source snapshot: libraries 3213/3593 (89.42%); shaders 1166/1166 (100.00%). -->
 
-[![libraries](https://barnacasiantiberiu.github.io/AnyPS5/badge-libraries.svg?v=fa89ac089f831aef)](https://barnacasiantiberiu.github.io/AnyPS5/) [![shaders](https://barnacasiantiberiu.github.io/AnyPS5/badge-shaders.svg?v=fa89ac089f831aef)](https://barnacasiantiberiu.github.io/AnyPS5/)
+[![libraries](https://barnacasiantiberiu.github.io/AnyPS5/badge-libraries.svg?v=445e2b65cf1fd3a3)](https://barnacasiantiberiu.github.io/AnyPS5/) [![shaders](https://barnacasiantiberiu.github.io/AnyPS5/badge-shaders.svg?v=445e2b65cf1fd3a3)](https://barnacasiantiberiu.github.io/AnyPS5/)
 
-[![progress map](https://barnacasiantiberiu.github.io/AnyPS5/progress.svg?v=fa89ac089f831aef)](https://barnacasiantiberiu.github.io/AnyPS5/)
+[![progress map](https://barnacasiantiberiu.github.io/AnyPS5/progress.svg?v=445e2b65cf1fd3a3)](https://barnacasiantiberiu.github.io/AnyPS5/)
 
 [![progress history](https://barnacasiantiberiu.github.io/AnyPS5/history.svg)](https://barnacasiantiberiu.github.io/AnyPS5/history.html)
 
