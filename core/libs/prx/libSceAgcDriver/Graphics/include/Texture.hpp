@@ -62,6 +62,9 @@ public:
     // CanCopyFrom says whether the two descriptors address the same surface compatibly.
     Texture(const Context& context, const std::shared_ptr<StorageTexture>& source, const GuestTextureResource& descriptor, VkComponentMapping components);
     Texture(const Context& context, VkImage depthImage, VkFormat depthFormat, VkImageAspectFlags aspect, VkComponentMapping components);
+    // A sampled array assembled from separately rendered depth faces.
+    Texture(const Context& context, std::span<const VkImage> layers, VkFormat format, VkExtent2D extent, VkImageAspectFlags aspect, VkComponentMapping components);
+    void RefreshDepthLayers(std::span<const VkImage> layers, VkImageAspectFlags aspect);
     struct DepthCopyTag {};
     Texture(const Context& context, const std::shared_ptr<StorageTexture>& source, const GuestTextureResource& descriptor, VkComponentMapping components, DepthCopyTag);
     static VkFormat DepthCopyFormat(VkFormat colorFormat);

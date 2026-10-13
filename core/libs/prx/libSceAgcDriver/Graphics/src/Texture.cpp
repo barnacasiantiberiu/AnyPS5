@@ -673,6 +673,95 @@ Texture::Texture(const Context& context, VkImage depthImage, VkFormat depthForma
     viewRange = {viewInfo.viewType, viewInfo.subresourceRange.levelCount, viewInfo.subresourceRange.layerCount};
 }
 
+Texture::Texture(const Context& context, std::span<const VkImage> layers, VkFormat format, VkExtent2D extent, VkImageAspectFlags aspect, VkComponentMapping components) : context(context) {
+    try {
+        Require(!layers.empty() && layers.size() <= context.limits.maxImageArrayLayers, "depth array exceeds device limits");
+        copyWidth = extent.width;
+        copyHeight = extent.height;
+        copyLayers = static_cast<std::uint32_t>(layers.size());
+        VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        info.imageType = VK_IMAGE_TYPE_2D;
+        info.format = format;
+        info.extent = {copyWidth, copyHeight, 1};
+        info.mipLevels = 1;
+        info.arrayLayers = copyLayers;
+        info.samples = VK_SAMPLE_COUNT_1_BIT;
+        info.tiling = VK_IMAGE_TILING_OPTIMAL;
+        info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        Check(context.Function<PFN_vkCreateImage>("vkCreateImage")(context.device, &info, nullptr, &image), "vkCreateImage depth array");
+        owned = std::make_shared<OwnedImage>(context, image, VK_NULL_HANDLE);
+        VkMemoryRequirements requirements{};
+        context.Function<PFN_vkGetImageMemoryRequirements>("vkGetImageMemoryRequirements")(context.device, image, &requirements);
+        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocation.allocationSize = requirements.size;
+        allocationBytes = requirements.size;
+        allocation.memoryTypeIndex = context.MemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        Check(context.Function<PFN_vkAllocateMemory>("vkAllocateMemory")(context.device, &allocation, nullptr, &owned->memory), "vkAllocateMemory depth array");
+        Check(context.Function<PFN_vkBindImageMemory>("vkBindImageMemory")(context.device, image, owned->memory, 0), "vkBindImageMemory depth array");
+        VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        viewInfo.image = image;
+        // Cube shaders already select a face explicitly and use a 2D-array view.
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        viewInfo.format = format;
+        viewInfo.components = components;
+        viewInfo.subresourceRange = {aspect, 0, 1, 0, copyLayers};
+        Check(context.Function<PFN_vkCreateImageView>("vkCreateImageView")(context.device, &viewInfo, nullptr, &view), "vkCreateImageView depth array");
+        viewFormat = format;
+        viewRange = {viewInfo.viewType, 1, copyLayers};
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.subresourceRange.layerCount = 1;
+        Check(context.Function<PFN_vkCreateImageView>("vkCreateImageView")(context.device, &viewInfo, nullptr, &firstLayerView), "vkCreateImageView depth array first layer");
+        firstLayerRange = {VK_IMAGE_VIEW_TYPE_2D, 1, 1};
+        RefreshDepthLayers(layers, aspect);
+    } catch (...) {
+        release();
+        throw;
+    }
+}
+
+void Texture::RefreshDepthLayers(std::span<const VkImage> layers, VkImageAspectFlags aspect) {
+    Require(layers.size() == copyLayers && owned != nullptr, "depth array layer count changed");
+    auto* recorder = Recorder::Active();
+    std::unique_ptr<CommandBatch> batch;
+    if (recorder == nullptr) batch = std::make_unique<CommandBatch>(context);
+    const auto commands = recorder != nullptr ? recorder->Commands() : batch->Handle();
+    if (recorder != nullptr) recorder->Keep(owned);
+    const auto barrier = context.Function<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier");
+    const VkMemoryBarrier produced{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_TRANSFER_READ_BIT};
+    VkImageMemoryBarrier ready{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    ready.srcAccessMask = copiedOnce ? VK_ACCESS_SHADER_READ_BIT : 0;
+    ready.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    ready.oldLayout = copiedOnce ? layout : VK_IMAGE_LAYOUT_UNDEFINED;
+    ready.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    ready.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    ready.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    ready.image = image;
+    // Depth/stencil layouts cover both aspects unless separate layouts are enabled.
+    const bool stencilFormat = viewFormat == VK_FORMAT_D16_UNORM_S8_UINT || viewFormat == VK_FORMAT_D24_UNORM_S8_UINT || viewFormat == VK_FORMAT_D32_SFLOAT_S8_UINT;
+    ready.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT | (stencilFormat ? VK_IMAGE_ASPECT_STENCIL_BIT : 0u), 0, 1, 0, copyLayers};
+    barrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &produced, 0, nullptr, 1, &ready);
+    const auto copy = context.Function<PFN_vkCmdCopyImage>("vkCmdCopyImage");
+    for (std::uint32_t layer = 0; layer < copyLayers; ++layer) {
+        VkImageCopy region{};
+        region.srcSubresource = {aspect, 0, 0, 1};
+        region.dstSubresource = {aspect, 0, layer, 1};
+        region.extent = {copyWidth, copyHeight, 1};
+        copy(commands, layers[layer], VK_IMAGE_LAYOUT_GENERAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    }
+    ready.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    ready.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    ready.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    ready.newLayout = layout;
+    const VkMemoryBarrier consumed{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_READ_BIT,
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+    barrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &consumed, 0, nullptr, 1, &ready);
+    if (batch) batch->SubmitAndWait();
+    copiedOnce = true;
+}
+
 Texture::~Texture() {
     release();
 }

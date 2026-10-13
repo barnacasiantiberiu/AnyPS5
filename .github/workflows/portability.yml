@@ -84,7 +84,7 @@ jobs:
           ctest --test-dir build -R '^guest_address_signal$' --repeat until-fail:10 --output-on-failure --output-junit kernel-signal-stress.xml
       - name: Build graphics regressions
         shell: bash
-        run: cmake --build build --target nid_patcher agc_driver_shader_signal_tests agc_driver_prepared_publication_tests agc_driver_graphics_tests agc_driver_tessellation_tests agc_driver_pixel_barycentric_emulation_tests
+        run: cmake --build build --target nid_patcher agc_driver_shader_signal_tests agc_driver_prepared_publication_tests agc_driver_graphics_tests agc_driver_tessellation_tests agc_driver_pixel_barycentric_emulation_tests agc_driver_layered_depth_sampling_tests
       - name: Validate packaged signal bridge
         shell: bash
         run: |
@@ -111,7 +111,7 @@ jobs:
           done
           test -n "${VK_ICD_FILENAMES:-}"
           cat "$VK_ICD_FILENAMES"
-          ctest --test-dir build -R '^agc_driver_(prepared_publication|tessellation|pixel_barycentric_emulation)$' --output-on-failure --output-junit graphics-render.xml
+          ctest --test-dir build -R '^agc_driver_(prepared_publication|tessellation|pixel_barycentric_emulation|layered_depth_sampling)$' --output-on-failure --output-junit graphics-render.xml
       - name: Upload validation evidence
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
