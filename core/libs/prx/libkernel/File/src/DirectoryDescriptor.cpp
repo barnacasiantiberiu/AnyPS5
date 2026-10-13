@@ -10,6 +10,7 @@
 #ifdef _WIN32
 
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/GuestLinks.hpp"
 
 #include <cerrno>
 #include <cstdint>
@@ -98,7 +99,8 @@ void Load(DirectoryState& state) {
     std::error_code error;
     for (const auto& entry : std::filesystem::directory_iterator(state.path, error)) {
         std::error_code typeError;
-        state.entries.emplace_back(entry.path().filename().string(), entry.is_directory(typeError) ? GuestDirectoryType : GuestRegularType);
+        const bool link = ReadStoredGuestLink_nid_no_patch(entry.path()).has_value() || entry.is_symlink(typeError);
+        state.entries.emplace_back(entry.path().filename().string(), link ? 10 : entry.is_directory(typeError) ? GuestDirectoryType : GuestRegularType);
     }
 }
 

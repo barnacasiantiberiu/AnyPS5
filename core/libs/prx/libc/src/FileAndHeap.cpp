@@ -215,7 +215,7 @@ FileStream* APS5_VABI freopen_nid_postfix(const char* filename, const char* mode
     try {
         std::filesystem::path path;
         if (*filename) {
-            if (const int error = ResolvePathError_nid_no_patch(filename, path)) {
+            if (const int error = ResolvePathError_nid_no_patch(filename, path, !parsed->exclusive)) {
                 stream->Close();
                 if (stream->IsDynamic()) delete stream;
                 errno = error;
@@ -244,7 +244,7 @@ FileStream* APS5_VABI fopen_nid_postfix(const char* filename, const char* mode) 
         return nullptr;
     }
     std::filesystem::path fpath;
-    if (const int error = ResolvePathError_nid_no_patch(filename, fpath)) { errno = error; return nullptr; }
+    if (const int error = ResolvePathError_nid_no_patch(filename, fpath, !parsed->exclusive)) { errno = error; return nullptr; }
     const auto abs_path = fpath.string();
     std::unique_ptr<std::FILE, int (*)(std::FILE*)> handle(OpenNative(fpath, parsed->native), std::fclose);
     if (!handle) {

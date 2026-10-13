@@ -74,7 +74,7 @@ extern "C" int APS5_VABI remove_nid_postfix(const char* path) {
     if (!path) { errno = 14; return -1; }
     if (!*path) { errno = 2; return -1; }
     try {
-        const auto resolved = ResolvePath_nid_no_patch(path);
+        const auto resolved = ResolvePathNoFollow_nid_no_patch(path);
         if (FinalPathComponentIsDot_nid_no_patch(path)) {
             std::error_code statusError;
             const auto status = std::filesystem::status(resolved, statusError);

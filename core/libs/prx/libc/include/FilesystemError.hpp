@@ -3,6 +3,7 @@
 
 #include <system_error>
 #include "General.hpp"
+#include "GuestLinks.hpp"
 
 inline int FilesystemError(const std::error_code& error) {
     if (error == std::errc::no_such_file_or_directory) return 2;
@@ -23,9 +24,9 @@ inline int FilesystemError(const std::error_code& error) {
     return 5;
 }
 
-inline int ResolvePathError_nid_no_patch(const char* path, std::filesystem::path& resolved) {
+inline int ResolvePathError_nid_no_patch(const char* path, std::filesystem::path& resolved, bool followFinal = true) {
     try {
-        resolved = ResolvePath_nid_no_patch(path);
+        resolved = followFinal ? ResolvePath_nid_no_patch(path) : ResolvePathNoFollow_nid_no_patch(path);
         return 0;
     } catch (const std::filesystem::filesystem_error& error) {
         if (error.code() == std::errc::illegal_byte_sequence) return 2;

@@ -1,5 +1,6 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include "prx/libkernel/File/include/FileFlags.hpp"
+#include "SceTypes.hpp"
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -27,6 +28,7 @@ int APS5_VABI _fstatfs_nid_postfix(int, void*);
 int APS5_VABI open_nid_postfix(const char*, int, int);
 int APS5_VABI close_nid_postfix(int);
 std::int64_t APS5_VABI readlink_nid_postfix(const char*, char*, std::size_t);
+int APS5_VABI lstat_nid_postfix(const char*, FileStat*);
 std::int64_t APS5_VABI pathconf_nid_postfix(const char*, int);
 int APS5_VABI fchdir_nid_postfix(int);
 int APS5_VABI chdir_nid_postfix(const char*);
@@ -268,10 +270,11 @@ int main(int argc, char** argv) {
     if (created == 0) {
         const auto dangling = (root / "dangling").string();
 #ifdef _WIN32
-        Require((GetFileAttributesW(std::filesystem::path(symbolic).wstring().c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0);
+        FileStat linkInfo{};
+        Require(lstat_nid_postfix(symbolic.c_str(), &linkInfo) == 0 && (linkInfo.st_mode & 0170000) == 0120000);
         Require(symlink_nid_postfix("original.bin", symbolic.c_str()) == -1 && Error() == 17);
         Require(symlink_nid_postfix("missing.bin", dangling.c_str()) == 0);
-        Require((GetFileAttributesW(std::filesystem::path(dangling).wstring().c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0);
+        Require(lstat_nid_postfix(dangling.c_str(), &linkInfo) == 0 && (linkInfo.st_mode & 0170000) == 0120000);
         Require(symlink_nid_postfix("missing.bin", dangling.c_str()) == -1 && Error() == 17);
         Require(readlink_nid_postfix(symbolic.c_str(), buffer, sizeof(buffer)) == 12 && std::memcmp(buffer, "original.bin", 12) == 0);
         Require(readlink_nid_postfix(dangling.c_str(), buffer, sizeof(buffer)) == 11 && std::memcmp(buffer, "missing.bin", 11) == 0);
@@ -291,15 +294,19 @@ int main(int argc, char** argv) {
         Require(symlink_nid_postfix("sub", directoryLink.c_str()) == 0);
         Require(readlink_nid_postfix(directoryLink.c_str(), buffer, sizeof(buffer)) == 3 && std::memcmp(buffer, "sub", 3) == 0);
         const auto absolute = std::filesystem::absolute(root / "absolute");
-        Require(CreateSymbolicLinkW(absolute.wstring().c_str(), std::filesystem::absolute(original).wstring().c_str(),
-            SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE) != 0);
-        bool refused = false;
-        try {
-            readlink_nid_postfix((root / "absolute").string().c_str(), buffer, sizeof(buffer));
-        } catch (const std::runtime_error& failure) {
-            refused = std::string(failure.what()) == "readlink of a Windows reparse point other than a relative symbolic link not implemented";
+        if (CreateSymbolicLinkW(absolute.wstring().c_str(), std::filesystem::absolute(original).wstring().c_str(),
+            SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE) != 0) {
+            bool refused = false;
+            try {
+                readlink_nid_postfix((root / "absolute").string().c_str(), buffer, sizeof(buffer));
+            } catch (const std::runtime_error& failure) {
+                refused = std::string(failure.what()) == "readlink of a Windows reparse point other than a relative symbolic link not implemented";
+            }
+            Require(refused);
+        } else {
+            Require(GetLastError() == ERROR_PRIVILEGE_NOT_HELD);
+            std::fprintf(stderr, "native host symlink fixture unavailable; guest symbolic links were validated\n");
         }
-        Require(refused);
 #else
         Require(std::filesystem::is_symlink(std::filesystem::symlink_status(symbolic)));
         Require(readlink_nid_postfix(symbolic.c_str(), buffer, sizeof(buffer)) == 12 && std::memcmp(buffer, "original.bin", 12) == 0);
