@@ -27,5 +27,7 @@ Throughout the project, every function at every stage either **does exactly what
 
 ### Functional
 
+- [Desktop resolution presets](../../tools/desktop/src/graphics-settings.cjs) update recognized Unity PS5 boot configuration width settings and preserve the original configuration. Game-specific internal render scaling, non-Unity adapters, detail presets and Linux Desktop packaging are not implemented. Games may override the requested size. Existing launcher features were imported with their original tests; only the graphics feature is validated by this change.
+
 - [Cancellation coverage](ARCHITECTURE.md#thread-cancellation) checks deferred request handling and recovery, not full asynchronous support or console ABI compatibility. Cancellation during file/socket I/O, sleep interruption, cancellation versus exit/detach, condition signal conservation under cancellation, and safe rejection of non-null invalid or reclaimed thread handles remain unverified. No console title or homebrew establishes the cleanup NIDs or buffer layout. Accepted asynchronous mode currently has no diagnostic for its deferred behavior.
 - `--to-intel` guest module trampolines are covered only by a synthetic relinker test; no game title has been verified with them on Linux or Windows.

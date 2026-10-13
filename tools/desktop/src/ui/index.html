@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>AnyPS5 Desktop</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="background.css">
+  <script src="background.js" defer></script>
+  <script src="audio.js" defer></script>
+  <script src="controller-navigation.js" defer></script>
+  <script src="renderer.js" defer></script>
+</head>
+<body>
+  <div class="titlebar"><span class="wordmark">ANY<span>PS5</span></span><span class="titlebar-label">DESKTOP · PREVIEW</span></div>
+  <div id="backdrop" class="backdrop"></div><div class="ambient" aria-hidden="true" inert><canvas id="ambient-canvas" aria-hidden="true"></canvas></div>
+  <header class="navigation">
+    <nav aria-label="Main navigation"><button id="nav-library" class="nav active" aria-current="page">Games</button><button id="nav-convert" class="nav">Convert <span class="nav-plus">+</span></button></nav>
+    <div class="toolbar"><div id="search-box" class="search-box hidden"><input id="search-input" aria-label="Search library" placeholder="Search games…"></div><button id="search-toggle" class="icon-button" aria-label="Search games"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 5 5"/></svg></button><button id="settings-open" class="icon-button" aria-label="Settings"><svg viewBox="0 0 24 24"><path d="m9 3 1-1h4l1 3 3 1 3 3-1 3 1 3-3 3-3 1-1 3h-4l-1-3-3-1-3-3 1-3-1-3 3-3 3-1Z"/><circle cx="12" cy="12" r="3"/></svg></button><span class="profile" aria-label="Local profile">B<span></span></span><time id="clock"></time></div>
+  </header>
+  <main>
+    <section id="library-view" class="view library-view" aria-label="Game library">
+      <div class="shelf-heading"><span>YOUR LIBRARY</span><span id="game-count">0 GAMES</span></div>
+      <div id="game-shelf" class="game-shelf" aria-label="Installed games"></div>
+      <div id="library-empty" class="hero empty-hero">
+        <div class="hero-copy"><div class="eyebrow"><span class="live-dot"></span> YOUR GAMES. ON WINDOWS.</div><h1>A new place<br>to play.</h1><p>Convert a game with AnyPS5.<br>Add it to your library. Press Play.</p><div class="hero-actions"><button id="empty-convert" class="button primary">Convert your first game <span>↗</span></button><button id="empty-import" class="button secondary">Import converted game</button></div><div class="quiet-caption">Original files stay safely in their source folder.</div></div>
+        <div class="orb-scene" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orb"><span>5</span></div><span class="spark spark-one"></span><span class="spark spark-two"></span><span class="spark spark-three"></span><div class="orb-caption">ONE LIBRARY. NEW POSSIBILITIES.</div></div>
+      </div>
+      <div id="game-hero" class="hero game-hero hidden"><div class="hero-copy"><div class="eyebrow"><span class="live-dot"></span><span id="game-platform">ANYPS5 · WINDOWS</span></div><h1 id="game-title"></h1><p id="game-description">Ready to launch from your library.</p><div class="hero-actions"><button id="game-launch" class="button primary"><span class="play-triangle">▶</span> Play</button><button id="game-menu-toggle" class="button round" aria-label="Game options" aria-expanded="false">•••</button><div id="game-menu" class="popup-menu hidden"><button id="game-folder">Open folder</button><button id="game-shortcut">Create desktop shortcut</button><button id="game-remove">Remove from library</button></div></div><div class="game-facts"><div><span>ADDED</span><strong id="game-date"></strong></div><div><span>LAST PLAYED</span><strong id="game-last"></strong></div><div><span>PLATFORM</span><strong>Windows · x64</strong></div></div><p class="quiet-caption">Conversion is complete. Compatibility is checked when the game runs.</p></div></div>
+      <footer class="library-footer"><span><span class="keycap">←</span><span class="keycap">→</span> Choose game <span class="keycap enter-key">Enter</span> Play</span><button id="footer-import">＋ Import converted game</button><span id="runtime-status" class="runtime-status"><i></i> Set up AnyPS5</span></footer>
+    </section>
+    <section id="convert-view" class="view convert-view hidden" aria-label="Conversion wizard">
+      <div class="conversion-heading"><div><div class="eyebrow">FROM PS5 TO YOUR LIBRARY</div><h1>Prepare your next game.</h1><p>One place to convert, install, and launch.</p></div><button id="convert-back" class="text-button">← Back to games</button></div>
+      <div class="wizard-layout"><aside class="wizard-sidebar"><ol id="step-list"><li data-step="1" class="current"><span>01</span><div>Your game<small>Choose the source</small></div></li><li data-step="2"><span>02</span><div>Destination<small>Review installation</small></div></li><li data-step="3"><span>03</span><div>Conversion<small>Getting everything ready</small></div></li><li data-step="4"><span>04</span><div>Ready to launch<small>Add a shortcut</small></div></li></ol><div class="sidebar-note"><svg viewBox="0 0 24 24"><path d="m12 2 8 3v6c0 5-8 10-8 10S4 16 4 11V5Z"/><path d="m8 11 3 3 5-6"/></svg><p>Your source files<br>stay intact.</p><span>Conversion creates a separate copy of the game.</span></div></aside>
+      <div class="wizard-card">
+        <div id="wizard-error" class="alert hidden" role="alert"></div>
+        <div id="step-1" class="step">
+          <div class="card-kicker">STEP 01 / 04</div><h2>What are we playing?</h2><p class="muted">Choose an extracted game folder or an ISO image containing game files and a decrypted ELF executable.</p>
+          <div class="source-options"><button id="pick-source" type="button" class="source-picker"><span class="folder-glyph"><svg viewBox="0 0 64 48"><path d="M3 9a5 5 0 0 1 5-5h16l7 7h25a5 5 0 0 1 5 5v25a4 4 0 0 1-4-4H7a4 4 0 0 1-4-4Z"/><path d="M4 18h56"/></svg></span><strong>Choose game folder</strong><span>Extracted game files</span></button><button id="pick-iso" type="button" class="source-picker"><span class="folder-glyph"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="19"/><circle cx="24" cy="24" r="5"/><path d="M24 10a14 14 0 0 1 14 14M24 38A14 14 0 0 1 10 24"/></svg></span><strong>Choose ISO image</strong><span>Open an image read-only</span></button></div>
+          <div id="source-summary" class="source-summary hidden" role="status"><strong id="source-label"></strong><span id="source-hint"></span></div>
+          <div id="source-details" class="hidden"><label for="game-name-input">Game name</label><input id="game-name-input" placeholder="Name shown in your library" maxlength="100"><label id="entry-label" for="entry-input">Game executable</label><div id="folder-entry-field" class="path-field"><input id="entry-input" readonly placeholder="Select an ELF executable"><button id="pick-entry" type="button" class="small-button">Choose</button></div><select id="iso-entry-select" class="iso-entry-select hidden" aria-labelledby="entry-label" aria-describedby="source-note" disabled><option value="">No decrypted ELF executable found</option></select></div>
+          <p id="source-note" class="source-note hidden" role="status"></p><div class="step-footer"><span>ISO images need decrypted game files. Encrypted disc images and PKG files cannot be decrypted by AnyPS5.</span><button id="to-step-2" class="button primary" disabled>Continue <span>→</span></button></div>
+        </div>
+        <div id="step-2" class="step hidden"><div class="card-kicker">STEP 02 / 04</div><h2>A home for your game.</h2><p class="muted">Install the game in its own folder and add it to your library.</p><label for="destination-input">Library folder</label><div class="path-field"><input id="destination-input" readonly><button id="pick-destination" class="small-button">Change</button></div><div class="destination-preview"><span class="folder-small">▱</span><div><strong id="destination-name"></strong><span>app.exe · app0 · libs</span></div><span class="tag">WINDOWS</span></div><label class="checkbox-row"><input id="intel-check" type="checkbox"><span>Prepare instructions for an Intel processor<small id="cpu-label"></small></span></label><div id="preflight-result" class="preflight-result hidden"></div><div class="runtime-callout"><div><span id="engine-status-dot" class="live-dot"></span><span id="engine-status-text">Checking the AnyPS5 engine</span></div><button id="wizard-settings" class="text-button">Settings ↗</button></div><div class="step-footer"><button id="back-step-1" class="text-button">← Back</button><button id="begin-install" class="button primary">Check and convert <span>→</span></button></div></div>
+        <div id="step-3" class="step hidden"><div class="card-kicker">STEP 03 / 04</div><div class="conversion-symbol" aria-hidden="true">↗</div><h2>Building a new starting point.</h2><p id="install-title" class="muted"></p><div class="progress-heading" aria-live="polite"><strong id="phase-label">Checking files</strong><span id="phase-stage">Stage 1 of 5</span></div><div id="progress-track" class="progress-track stage-progress" role="progressbar" aria-labelledby="phase-label" aria-describedby="phase-stage progress-status" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="0 of 5 stages completed. Checking files." aria-busy="true"><div id="progress-fill"></div><div id="progress-current" aria-hidden="true"></div></div><div class="progress-details"><span id="progress-status" role="status">Running…</span><span id="phase-percent"></span></div><p class="progress-note">The bar tracks completed stages. Conversion can take longer than copying; follow the log below.</p><details class="log-panel" open><summary>Conversion log <span>LIVE</span></summary><pre id="install-log" aria-live="off">Waiting for the first step…</pre></details><div class="step-footer"><span>The game appears in your library when conversion finishes.</span><button id="cancel-install" class="button secondary">Cancel</button></div></div>
+        <div id="step-4" class="step hidden"><div class="card-kicker">STEP 04 / 04</div><div class="success-symbol">✓</div><h2>Conversion complete.</h2><p class="muted"><strong id="complete-title"></strong> has been added to your library.</p><div class="complete-location"><span>INSTALLED IN</span><strong id="complete-path"></strong></div><button id="complete-shortcut" class="shortcut-option"><span class="shortcut-icon">↗</span><span><strong>Create desktop shortcut</strong><small>Launch your game directly, anytime.</small></span><span id="shortcut-state">＋</span></button><p class="quiet-caption">Successful conversion does not guarantee in-game compatibility.</p><div class="step-footer"><button id="complete-library" class="text-button">Back to library</button><button id="complete-launch" class="button primary">▶ Launch game</button></div></div>
+      </div></div>
+    </section>
+  </main>
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <form id="settings-form">
+      <div class="dialog-header"><div><div class="card-kicker">MAKE IT YOURS</div><h2 id="settings-title">Settings</h2></div><button id="settings-close" type="button" class="icon-button" aria-label="Close settings">✕</button></div>
+      <div class="settings-tabs" role="tablist" aria-label="Settings categories"><button id="settings-tab-players" type="button" class="settings-tab active" role="tab" aria-selected="true" aria-controls="settings-panel-players">Players</button><button id="settings-tab-engine" type="button" class="settings-tab" role="tab" aria-selected="false" aria-controls="settings-panel-engine" tabindex="-1">AnyPS5 engine</button><button id="settings-tab-audio" type="button" class="settings-tab" role="tab" aria-selected="false" aria-controls="settings-panel-audio" tabindex="-1">Audio</button><button id="settings-tab-input" type="button" class="settings-tab" role="tab" aria-selected="false" aria-controls="settings-panel-input" tabindex="-1">Input mapping</button><button id="settings-tab-graphics" type="button" class="settings-tab" role="tab" aria-selected="false" aria-controls="settings-panel-graphics" tabindex="-1">Graphics</button></div>
+      <p id="settings-keyboard-hint" class="settings-keyboard-hint" role="status">↑ ↓ ← → Navigate · Enter Select · Esc Back</p>
+      <div class="settings-body">
+        <section id="settings-panel-players" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-players">
+          <div class="players-heading"><div><h3>Who's playing?</h3><p class="muted">Choose an input for each player. One keyboard &amp; mouse and up to three controllers.</p></div><span class="players-badge">1–4</span></div>
+          <div id="player-rows" class="player-rows"></div>
+          <p id="player-assignment-feedback" class="assignment-feedback" role="status" aria-live="polite">Each input can belong to one player. Disable its current player before moving it.</p>
+          <div class="controller-monitor"><div class="monitor-heading"><h3>Connected controllers</h3><span id="controllers-count" class="connection-count" role="status">0 / 3 connected</span></div><p>Connect a controller using USB or Windows Bluetooth, then press a button while this window is active. These are browser detection slots; AnyPS5 uses the first controller recognized by SDL.</p><div id="controller-devices" class="controller-devices"></div><p id="controller-detection-note" class="detection-note hidden" role="status"></p></div>
+          <p id="players-runtime-note" class="settings-note">These four assignments remain launcher profiles. Games use the first SDL-recognized controller together with keyboard and mouse. See Input mapping for the settings applied at launch.</p>
+        </section>
+        <section id="settings-panel-engine" class="settings-panel hidden" role="tabpanel" aria-labelledby="settings-tab-engine">
+          <h3>Connect your engine</h3><p class="muted">Use an AnyPS5 build for Windows. These settings apply to every game.</p>
+          <label for="setting-relinker">Relinker</label><div class="path-field"><input id="setting-relinker" placeholder="C:\AnyPS5\relinker.exe"><button type="button" data-setting="relinker" class="small-button">Choose</button></div>
+          <label for="setting-libs">Windows libraries</label><div class="path-field"><input id="setting-libs" placeholder="The libs folder containing .prx files"><button type="button" data-setting="libs" class="small-button">Choose</button></div>
+          <label for="setting-dllDirectory">MinGW DLLs <span class="optional">optional if already included in libs</span></label><div class="path-field"><input id="setting-dllDirectory" placeholder="The bin folder of the toolchain used to build AnyPS5"><button type="button" data-setting="dllDirectory" class="small-button">Choose</button></div>
+        </section>
+        <section id="settings-panel-audio" class="settings-panel hidden" role="tabpanel" aria-labelledby="settings-tab-audio">
+          <h3>Menu audio</h3><p class="muted">Set the volume for the background music and the sounds you hear as you navigate.</p>
+          <label class="audio-master" for="audio-enabled"><input id="audio-enabled" type="checkbox" checked><span>Enable menu audio<small>Background music and menu sounds</small></span></label>
+          <div class="audio-volumes">
+            <div class="audio-volume-control">
+              <div class="audio-volume-header"><label for="music-volume">Background music</label><output id="music-volume-value" for="music-volume">25%</output></div>
+              <input id="music-volume" type="range" min="0" max="100" step="1" value="25" aria-describedby="music-volume-description">
+              <p id="music-volume-description">A soft ambient soundtrack while you browse.</p>
+            </div>
+            <div class="audio-volume-control">
+              <div class="audio-volume-header"><label for="effects-volume">Menu sounds</label><output id="effects-volume-value" for="effects-volume">45%</output></div>
+              <input id="effects-volume" type="range" min="0" max="100" step="1" value="45" aria-describedby="effects-volume-description">
+              <p id="effects-volume-description">Sounds for navigation, selection and going back.</p>
+            </div>
+          </div>
+        </section>
+        <section id="settings-panel-input" class="settings-panel hidden" role="tabpanel" aria-labelledby="settings-tab-input">
+          <h3>Game input</h3><p class="muted">Applied whenever you launch a game from AnyPS5 Desktop. The first controller recognized by SDL is used automatically, including supported Xbox, PlayStation and generic gamepads.</p>
+          <div class="input-mapping-card"><h4>Controller → PlayStation</h4><dl><dt>A / B / X / Y</dt><dd>Cross / Circle / Square / Triangle</dd><dt>LB / RB · LT / RT</dt><dd>L1 / R1 · analog L2 / R2</dd><dt>Start · sticks · D-pad</dt><dd>Options · movement · directional buttons</dd></dl></div>
+          <div class="input-settings-grid"><div><label for="input-left-deadzone">Left stick deadzone (%)</label><input id="input-left-deadzone" type="number" min="0" max="90" step="1" value="0" required></div><div><label for="input-right-deadzone">Right stick deadzone (%)</label><input id="input-right-deadzone" type="number" min="0" max="90" step="1" value="0" required></div><div><label for="input-mouse-sensitivity">Mouse sensitivity</label><input id="input-mouse-sensitivity" type="number" min="0.01" max="10" step="any" value="1" required></div></div>
+          <button id="input-defaults" type="button" class="small-button">Restore AnyPS5 defaults</button>
+          <p class="settings-note">Default deadzones: 0%; mouse sensitivity: 1×. Increase a deadzone if a stick drifts. Keyboard and mouse keep AnyPS5's built-in bindings: WASD for the left stick, Enter/Space for Cross, Esc for Options, and middle mouse to capture/release mouse movement.</p>
+          <p class="settings-note">A custom anyps5-input.ini beside a game's executable takes precedence and stays unchanged. Otherwise, the launcher supplies these settings through ANYPS5_INPUT_CONFIG. Controller bindings stay automatic; the four player profiles do not change in-game routing.</p>
+        </section>
+        <section id="settings-panel-graphics" class="settings-panel hidden" role="tabpanel" aria-labelledby="settings-tab-graphics">
+          <h3>Game resolution</h3><p class="muted">Choose the resolution requested the next time you launch a supported game.</p>
+          <label for="graphics-resolution">Resolution</label>
+          <select id="graphics-resolution" aria-describedby="graphics-resolution-note"></select>
+          <p id="graphics-resolution-note" class="settings-note">1080p is the default. Lower resolutions can improve performance at the cost of image sharpness. Games may use a different internal rendering resolution.</p>
+          <p class="settings-note">Supported Unity games use this setting at startup. Other games keep their original resolution and show a message when launched. Select Original game resolution to restore a supported game's saved configuration on its next launch.</p>
+          <p class="settings-note">Close a running game before applying a new resolution. This changes the game's startup configuration, not just its window size.</p>
+        </section>
+        <div id="settings-error" class="alert hidden" role="alert"></div>
+      </div>
+      <div class="dialog-footer"><span>Saved on this PC · Applies to all games</span><button type="submit" class="button primary">Save settings</button></div>
+    </form>
+  </dialog>
+  <dialog id="exit-dialog" aria-labelledby="exit-title" aria-describedby="exit-description">
+    <div class="exit-dialog-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M7 5.5a8 8 0 1 0 10 0"/></svg></div>
+    <h2 id="exit-title">Exit AnyPS5 Desktop?</h2>
+    <p id="exit-description" class="muted">Close the app and return to Windows.</p>
+    <p id="exit-input-hint" class="settings-keyboard-hint" role="status">← → Choose · Enter Select · Esc Stay</p>
+    <div class="exit-dialog-actions"><button id="exit-cancel" type="button" class="button secondary" autofocus>Stay</button><button id="exit-confirm" type="button" class="button primary">Exit</button></div>
+  </dialog>
+  <div id="keyboard-hint" class="keyboard-hint" role="status">↑ ↓ ← → Navigate · Enter Select · Esc Back</div>
+  <div id="toast" class="toast hidden" role="status"></div>
+</body>
+</html>

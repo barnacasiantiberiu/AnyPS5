@@ -42,6 +42,8 @@ Barycentric fallback geometry shaders are reused by interface and compilation ta
 
 Per-game progress (stage reached, open blockers, libraries and GPU coverage) is tracked on the [blocker map](https://alxcbtw.github.io/anyps5-roadmap/), a community project built from public GitHub data ([source](https://github.com/AlxcBTW/anyps5-roadmap)). Test reports go in the [Game bring-up](https://github.com/boykopovar/AnyPS5/discussions/categories/game-bring-up) discussions, one thread per title.
 
+The [Desktop launcher](docs/user/DESKTOP.md) provides saved resolution presets under Settings > Graphics. Supported Unity startup configurations are updated reversibly at launch; other titles retain their original resolution. A Windows runtime trace confirms 1920x1080 video output for Valheim with the 1080p preset. This is not universal internal render scaling or a confirmed FPS fix. Export coverage is unchanged.
+
 ## Input mapping
 
 SDL-mapped game controllers are supported, including analog sticks and triggers. Keyboard and mouse controls can be configured with an `anyps5-input.ini` file. See [input mapping](docs/user/INPUT_MAPPING.md) for the supported devices and configuration format.

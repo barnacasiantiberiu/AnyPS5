@@ -1,0 +1,10 @@
+/* Original procedural ambience; the CSS layer remains as the no-canvas fallback. */
+body{isolation:isolate}
+.ambient{z-index:-1;background:radial-gradient(ellipse at 19% 5%,#b6b5a82e 0,transparent 54%),radial-gradient(ellipse at 3% 89%,#8993a322,transparent 45%),linear-gradient(118deg,#10131a,#242831 67%,#28282d);opacity:1;transition:opacity 1.2s ease;isolation:isolate;overflow:hidden;pointer-events:none}
+.ambient::before,.ambient::after{content:none;animation:none;background:none;filter:none;transform:none}
+#ambient-canvas{transform:translateZ(0);will-change:transform;display:block;width:100%;height:100%;pointer-events:none;opacity:0;transition:opacity 1.4s ease}
+#ambient-canvas[data-ready=true]{opacity:1}
+.ambient:after{content:'';position:absolute;inset:0;opacity:1;background:linear-gradient(90deg,#080b124a 0%,#080b1210 52%,transparent 80%),linear-gradient(0deg,#05080e64,transparent 55%);pointer-events:none}
+body.has-game-artwork .ambient{opacity:.14}
+body:not(.has-game-artwork) .backdrop:after{background:none}
+@media(prefers-reduced-motion:reduce){.ambient,#ambient-canvas{transition:none}}
