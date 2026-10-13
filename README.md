@@ -36,6 +36,8 @@ Shader preparation transactions also defer guest signals until their writer lock
 
 The AGC driver can emulate fragment barycentrics after triangular tessellation on GPUs without `VK_KHR_fragment_shader_barycentric`. Render regressions check perspective and linear weights against triangle reference pixels. This addresses the subsequent Valheim shader-stage failure; full gameplay and performance remain unverified.
 
+Depth sampling supports single-mip cube and 2D-array views assembled from separately rendered depth faces. GPU regression coverage checks face selection and refresh after a new depth write. This addresses the depth-cubemap failure observed after Valheim's intro: the main menu now opens and menu audio is audible. Intro audio, low frame rate and full gameplay remain under investigation. Export coverage is unchanged.
+
 Per-game progress (stage reached, open blockers, libraries and GPU coverage) is tracked on the [blocker map](https://alxcbtw.github.io/anyps5-roadmap/), a community project built from public GitHub data ([source](https://github.com/AlxcBTW/anyps5-roadmap)). Test reports go in the [Game bring-up](https://github.com/boykopovar/AnyPS5/discussions/categories/game-bring-up) discussions, one thread per title.
 
 ## Input mapping
