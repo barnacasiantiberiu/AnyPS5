@@ -10,6 +10,13 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#ifdef __linux__
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <time.h>
+#include <system_error>
+#endif
 
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
@@ -54,8 +61,55 @@ struct UmtxTime {
     std::uint32_t clockId;
 };
 
+#ifndef __linux__
+using AddressCondition = TimedWait::Condition;
+#else
+class AddressCondition {
+public:
+    void NotifyOne() {
+        event.store(1, std::memory_order_release);
+        if (syscall(SYS_futex, &event, FUTEX_WAKE_PRIVATE, 1, nullptr, nullptr, 0) < 0)
+            throw std::system_error(errno, std::generic_category(), "Waking address waiter");
+    }
+    template<class TLock, class TPredicate>
+    void Wait(TLock& lock, TPredicate predicate) {
+        while (!predicate()) {
+            lock.unlock();
+            const int error = waitSignal(nullptr);
+            lock.lock();
+            if (error != 0) throw std::system_error(error, std::generic_category(), "Waiting on address");
+        }
+    }
+    template<class TLock, class TPredicate>
+    bool WaitUntil(TLock& lock, std::uint64_t deadline, TPredicate predicate) {
+        const timespec until{static_cast<time_t>(deadline / 1000000000ULL), static_cast<long>(deadline % 1000000000ULL)};
+        while (!predicate()) {
+            lock.unlock();
+            const int error = waitSignal(&until);
+            lock.lock();
+            if (error != 0) {
+                if (error == ETIMEDOUT) return predicate();
+                throw std::system_error(error, std::generic_category(), "Waiting on address deadline");
+            }
+        }
+        return true;
+    }
+private:
+    int waitSignal(const timespec* deadline) {
+        while (event.exchange(0, std::memory_order_acquire) == 0) {
+            if (syscall(SYS_futex, &event, FUTEX_WAIT_BITSET_PRIVATE, 0, deadline, nullptr, FUTEX_BITSET_MATCH_ANY) == 0) continue;
+            const int error = errno;
+            if (error != EAGAIN && error != EINTR) return error;
+        }
+        return 0;
+    }
+    alignas(4) std::atomic<std::uint32_t> event{0};
+    static_assert(sizeof(event) == 4 && decltype(event)::is_always_lock_free);
+};
+#endif
+
 struct AddressWaiter {
-    TimedWait::Condition condition;
+    AddressCondition condition;
     bool woken = false;
 };
 
@@ -66,7 +120,7 @@ struct Usem2 {
 static_assert(sizeof(Usem2) == 8 && offsetof(Usem2, flags) == 4);
 
 struct SemaphoreState {
-    std::mutex mutex;
+    TimedWait::SignalMutex mutex;
     std::unordered_map<std::uintptr_t, std::list<AddressWaiter*>> queues;
     bool prepared = false;
 };
@@ -106,7 +160,7 @@ struct SemaphoreForkRegistration {
     }
 } semaphoreForkRegistration;
 
-std::mutex g_waitersLock;
+TimedWait::SignalMutex g_waitersLock;
 std::unordered_map<std::uintptr_t, std::list<AddressWaiter*>> g_waiters;
 
 template <class TValue>
@@ -117,12 +171,13 @@ bool IsAlignedAddress(std::uintptr_t address) {
 template <class TValue>
 bool WaitOnAddressUntil(TValue* address, TValue expected, std::optional<std::uint64_t> deadlineNanos, const void* caller) {
     const auto key = reinterpret_cast<std::uintptr_t>(address);
-    std::unique_lock<std::mutex> lock(g_waitersLock);
+    std::unique_lock lock(g_waitersLock);
     if (std::atomic_ref<TValue>(*address).load() != expected) {
         return true;
     }
 
-    AddressWaiter waiter;
+    std::optional<AddressWaiter> storage(std::in_place);
+    auto& waiter = *storage;
     auto& queue = g_waiters[key];
     const auto position = queue.insert(queue.end(), &waiter);
     const auto isWoken = [&] { return waiter.woken; };
@@ -141,6 +196,7 @@ bool WaitOnAddressUntil(TValue* address, TValue expected, std::optional<std::uin
             g_waiters.erase(key);
         }
     }
+    storage.reset();
     lock.unlock();
     KernelTraceWait_nid_postfix("addr", caller, static_cast<std::uint64_t>(waited.count()), !woken);
     return woken;
@@ -153,7 +209,7 @@ int WaitOnAddress(TValue* address, TValue expected, const KernelUseconds* timeou
 }
 
 void WakeAddress(std::uintptr_t key, std::int32_t count, bool wakesAtLeastOne) {
-    std::lock_guard<std::mutex> lock(g_waitersLock);
+    std::lock_guard lock(g_waitersLock);
     const auto entry = g_waiters.find(key);
     if (entry == g_waiters.end()) {
         return;
@@ -277,7 +333,8 @@ int UmtxSem2Wait(void* object, const void* sizeArgument, const void* timeArgumen
         if (value == USEM_HAS_WAITERS || count.compare_exchange_strong(value, USEM_HAS_WAITERS)) break;
     }
     const auto key = reinterpret_cast<std::uintptr_t>(object);
-    AddressWaiter waiter;
+    std::optional<AddressWaiter> storage(std::in_place);
+    auto& waiter = *storage;
     auto& queue = state.queues[key];
     const auto position = [&] {
         try { return queue.insert(queue.end(), &waiter); }
@@ -303,6 +360,7 @@ int UmtxSem2Wait(void* object, const void* sizeArgument, const void* timeArgumen
     }
     remove();
     const bool woken = waiter.woken;
+    storage.reset();
     lock.unlock();
     const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started);
     KernelTraceWait_nid_postfix("usem", caller, static_cast<std::uint64_t>(elapsed.count()), !woken);

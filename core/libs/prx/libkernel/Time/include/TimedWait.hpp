@@ -1,6 +1,7 @@
 #ifndef CORE_LIBS_PRX_LIBKERNEL_TIME_INCLUDE_TIMEDWAIT_HPP
 #define CORE_LIBS_PRX_LIBKERNEL_TIME_INCLUDE_TIMEDWAIT_HPP
 
+#include "SignalMutex.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -10,7 +11,7 @@
 namespace TimedWait {
 
 bool Coarse();
-void BindThreadWaitState(std::atomic<int>* state);
+void BindThreadWaitState(std::atomic<int>* state, std::atomic<int>* criticalState = nullptr, std::atomic<bool>* pendingState = nullptr);
 std::uint64_t NowNanos();
 std::uint64_t DeadlineNanos(std::uint64_t microseconds);
 std::uint64_t RemainingMicros(std::uint64_t deadlineNanos);
@@ -106,7 +107,7 @@ private:
     void waitSignal(Waiter* waiter);
     bool waitSignalUntil(Waiter* waiter, std::uint64_t deadlineNanos);
 
-    std::mutex queueLock;
+    SignalMutex queueLock;
     Waiter* head = nullptr;
     Waiter* tail = nullptr;
 #endif

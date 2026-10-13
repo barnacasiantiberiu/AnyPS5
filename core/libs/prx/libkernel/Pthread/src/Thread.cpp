@@ -254,7 +254,7 @@ bool ChildGuestThreads(void*) noexcept {
         current->cancelWait = nullptr;
         // Waiters belonging to vanished threads must not remain in the child's queue.
         std::construct_at(&current->_join_cv);
-        TimedWait::BindThreadWaitState(&current->waitCount);
+        TimedWait::BindThreadWaitState(&current->waitCount, &current->signalCriticalCount, &current->signalApcPending);
     }
     state.finishing = false;
     state.exiting = false;
@@ -492,7 +492,7 @@ static void RunThread(std::unique_ptr<ThreadArgs> args) {
     void* arg = args->arg;
     PthreadPrivate* self = args->self;
     BindHostCpuClock(self);
-    TimedWait::BindThreadWaitState(&self->waitCount);
+    TimedWait::BindThreadWaitState(&self->waitCount, &self->signalCriticalCount, &self->signalApcPending);
     CurrentGuestState().current = self;
     RegisterStack(self);
     GuestSignalThreadBind_nid_no_patch(self);
@@ -796,7 +796,7 @@ Pthread APS5_VABI scePthreadSelf() {
         adopted->threadId = std::this_thread::get_id();
         adopted->_detached = true;
         adopted->references.store(1, std::memory_order_relaxed);
-        TimedWait::BindThreadWaitState(&adopted->waitCount);
+        TimedWait::BindThreadWaitState(&adopted->waitCount, &adopted->signalCriticalCount, &adopted->signalApcPending);
         SetStackFromHost(adopted.get());
         CurrentGuestState().current = adopted.release();
     }

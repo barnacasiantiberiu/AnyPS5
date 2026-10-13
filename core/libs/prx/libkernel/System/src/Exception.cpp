@@ -276,8 +276,10 @@ bool RaiseOn(Pthread thread, GuestExceptionHandler handler, int signum) {
             ResumeThread(native);
             throw std::runtime_error("sceKernelRaiseException: cannot read the target thread context");
         }
-        if (thread->waitCount.load(std::memory_order_seq_cst) > 0) {
+        const bool critical = thread->signalCriticalCount.load(std::memory_order_seq_cst) != 0;
+        if (critical || thread->waitCount.load(std::memory_order_seq_cst) > 0) {
             const bool accepted = QueueUserAPC(WaitingEntry, native, reinterpret_cast<ULONG_PTR>(queued.get())) != 0;
+            if (accepted && critical) thread->signalApcPending.store(true, std::memory_order_seq_cst);
             ResumeThread(native);
             if (!accepted) throw std::runtime_error("sceKernelRaiseException: cannot queue delivery to the waiting thread");
             queued.release();
