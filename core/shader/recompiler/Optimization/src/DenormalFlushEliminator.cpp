@@ -61,9 +61,22 @@ private:
             case IrOpcode::BitwiseXor32:
                 if (const IrValue* operand = maskedOperand(&value, IrOpcode::BitwiseXor32, 0x80000000u)) return Contains(operand);
                 return false;
+            case IrOpcode::BitwiseOr32:
+                for (std::size_t index = 0; index < 2u; ++index) {
+                    const auto* mask = value.Argument(index)->Resolve();
+                    if (mask->HasImmediate() && (mask->ImmediateU32() & 0x7f800000u) != 0u) return true;
+                }
+                return false;
             case IrOpcode::BitwiseAnd32:
+                for (std::size_t index = 0; index < 2u; ++index) {
+                    const auto* mask = value.Argument(index)->Resolve();
+                    if (mask->HasImmediate() && (mask->ImmediateU32() & 0x007fffffu) == 0u) return true;
+                }
                 if (const IrValue* operand = maskedOperand(&value, IrOpcode::BitwiseAnd32, 0x7fffffffu)) return Contains(operand);
                 return false;
+            case IrOpcode::FPMin32:
+            case IrOpcode::FPMax32:
+                return Contains(value.Argument(0)) && Contains(value.Argument(1));
             case IrOpcode::SelectU32:
             case IrOpcode::SelectF32:
                 return Contains(value.Argument(1)) && Contains(value.Argument(2));

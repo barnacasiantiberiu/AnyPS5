@@ -192,5 +192,43 @@ int main() {
         return loop(true) && !loop(false);
     });
 
+    passed &= run("min and max propagate the denormal-free property of both operands", [] {
+        Builder b;
+        for (auto opcode : {IrOpcode::FPMin32, IrOpcode::FPMax32}) {
+            auto& first = b.emit(IrOpcode::BitCastF32U32, IrType::F32, {&b.flush(b.unknown())});
+            auto& second = b.emit(IrOpcode::BitCastF32U32, IrType::F32, {&b.flush(b.unknown())});
+            auto& unknown = b.emit(IrOpcode::BitCastF32U32, IrType::F32, {&b.unknown()});
+            auto& safe = b.flush(b.emit(IrOpcode::BitCastU32F32, IrType::U32, {&b.emit(opcode, IrType::F32, {&first, &second})}));
+            auto& unsafe = b.flush(b.emit(IrOpcode::BitCastU32F32, IrType::U32, {&b.emit(opcode, IrType::F32, {&first, &unknown})}));
+            b.keep(safe);
+            b.keep(unsafe);
+            if (b.eliminate() != 1u || safe.HasUses() || !unsafe.HasUses()) return false;
+        }
+        return true;
+    });
+
+    passed &= run("known exponent and mantissa masks remove only redundant flushes", [] {
+        Builder b;
+        for (bool swapped : {false, true}) {
+            for (auto mask : {0u, 0x80000000u, 0xff800000u}) {
+                auto& value = b.unknown();
+                auto& constant = b.constant(mask);
+                auto& bits = b.emit(IrOpcode::BitwiseAnd32, IrType::U32, swapped ? std::initializer_list<IrValue*>{&constant, &value} : std::initializer_list<IrValue*>{&value, &constant});
+                b.keep(b.flush(bits));
+            }
+            for (auto mask : {0x00800000u, 0x3f800000u, 0x7f800000u}) {
+                auto& value = b.unknown();
+                auto& constant = b.constant(mask);
+                auto& bits = b.emit(IrOpcode::BitwiseOr32, IrType::U32, swapped ? std::initializer_list<IrValue*>{&constant, &value} : std::initializer_list<IrValue*>{&value, &constant});
+                b.keep(b.flush(bits));
+            }
+        }
+        auto& mantissa = b.flush(b.emit(IrOpcode::BitwiseAnd32, IrType::U32, {&b.unknown(), &b.constant(0x007fffffu)}));
+        auto& quietBit = b.flush(b.emit(IrOpcode::BitwiseOr32, IrType::U32, {&b.unknown(), &b.constant(0x00400000u)}));
+        b.keep(mantissa);
+        b.keep(quietBit);
+        return b.eliminate() == 12u && mantissa.HasUses() && quietBit.HasUses();
+    });
+
     return passed ? 0 : 1;
 }
