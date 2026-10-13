@@ -1,6 +1,7 @@
 import argparse
 from datetime import datetime, timezone
 import json
+import platform
 from pathlib import Path
 import re
 import subprocess
@@ -50,10 +51,19 @@ def command(arguments, output):
         return subprocess.run(list(map(str, arguments)), cwd=ROOT, stdout=log, stderr=subprocess.STDOUT).returncode
 
 
+def build_steps(targets, modules):
+    if not targets:
+        return [([], "build.log"), (["--target", "libs"], "libs.log")]
+    if not modules or any(not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*", target) for target in targets):
+        raise ValueError("Focused builds require explicit modules and valid CMake target names")
+    return [(["--target", *dict.fromkeys(targets)], "build.log")]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build and run functional system-library tests on the host PC")
     parser.add_argument("--build-dir", type=Path, default=ROOT / "build")
     parser.add_argument("--module", action="append", help="library to test; repeat to select several; default: all registered")
+    parser.add_argument("--build-target", action="append", help="build only these CMake targets; requires explicit --module selections and does not validate full packaging")
     parser.add_argument("--base", help="also require suites for every library changed from this Git ref")
     parser.add_argument("--output-dir", type=Path, help="new directory for this run's logs and JUnit/JSON reports")
     args = parser.parse_args()
@@ -61,10 +71,13 @@ def main():
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     output = (args.output_dir or build / "module-tests" / stamp).resolve()
     output.mkdir(parents=True, exist_ok=False)
-    report = {"started_utc": stamp, "build_dir": str(build), "passed": False, "modules": {}}
+    report = {"started_utc": stamp, "build_dir": str(build), "passed": False, "modules": {},
+              "host": {"system": platform.system(), "release": platform.release(), "machine": platform.machine(),
+                       "python": platform.python_version()},
+              "build_targets": args.build_target or ["default", "libs"]}
     status = 1
     try:
-        for target, log in (([], "build.log"), (["--target", "libs"], "libs.log")):
+        for target, log in build_steps(args.build_target, args.module):
             if command(["cmake", "--build", build, *target], output / log):
                 raise ValueError(f"Build failed; see {output / log}")
         catalog = subprocess.run(["ctest", "--test-dir", str(build), "--show-only=json-v1"],

@@ -9,6 +9,18 @@ SPEC.loader.exec_module(runner)
 
 
 class ModuleRunnerTests(unittest.TestCase):
+    def test_default_build_still_builds_all_libraries(self):
+        self.assertEqual(runner.build_steps(None, None),
+                         [([], "build.log"), (["--target", "libs"], "libs.log")])
+
+    def test_focused_build_requires_explicit_modules_and_safe_targets(self):
+        for targets, modules in ((["guest_audio_in_tests"], None), (["--clean-first"], ["libSceAudioIn"]),
+                                 (["target;other"], ["libSceAudioIn"])):
+            with self.subTest(targets=targets), self.assertRaises(ValueError):
+                runner.build_steps(targets, modules)
+        self.assertEqual(runner.build_steps(["audio_tests", "audio_tests", "audio_modes"], ["libSceAudioIn"]),
+                         [(["--target", "audio_tests", "audio_modes"], "build.log")])
+
     def catalog(self, labels, timeout=30, disabled=False):
         return {"tests": [{"name": "decode", "properties": [
             {"name": "LABELS", "value": labels}, {"name": "TIMEOUT", "value": timeout},
