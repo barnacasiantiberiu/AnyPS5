@@ -286,7 +286,7 @@ void Condition::NotifyAll() {
 
 #endif
 
-void EnterSignalCriticalSection() {
+extern "C" void EnterSignalCriticalSection_nid_no_patch() {
     auto& local = WaitState();
 #ifdef _WIN32
     local.critical->fetch_add(1, std::memory_order_seq_cst);
@@ -301,7 +301,7 @@ void EnterSignalCriticalSection() {
 #endif
 }
 
-void LeaveSignalCriticalSection() {
+extern "C" void LeaveSignalCriticalSection_nid_no_patch() {
     auto& local = WaitState();
 #ifdef _WIN32
     if (local.critical->fetch_sub(1, std::memory_order_seq_cst) == 1 && local.pending->exchange(false)) DrainApcs();

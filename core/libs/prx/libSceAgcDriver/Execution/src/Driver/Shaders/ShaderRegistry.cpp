@@ -7,6 +7,7 @@
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "CacheKey.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ShaderPreparation.hpp"
+#include "prx/libkernel/Time/include/SignalMutex.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ShaderPreparationScope.hpp"
 #include "CompiledVariant.hpp"
 #include "Optimization/ResourceProgram.hpp"
@@ -192,9 +193,9 @@ struct ShaderPreparationTransaction::State {
         std::size_t baseEntries = 0;
         std::size_t baseAbis = 0;
     };
-    static std::mutex writers;
+    static TimedWait::SignalMutex writers;
     static thread_local State* active;
-    std::unique_lock<std::mutex> lock{writers, std::defer_lock};
+    std::unique_lock<TimedWait::SignalMutex> lock{writers, std::defer_lock};
     std::map<PreparedShaders*, Change> changes;
     bool failed = false;
 
@@ -203,7 +204,7 @@ struct ShaderPreparationTransaction::State {
     }
 };
 
-std::mutex ShaderPreparationTransaction::State::writers;
+TimedWait::SignalMutex ShaderPreparationTransaction::State::writers;
 thread_local ShaderPreparationTransaction::State* ShaderPreparationTransaction::State::active = nullptr;
 
 ShaderPreparationTransaction::ShaderPreparationTransaction() {
