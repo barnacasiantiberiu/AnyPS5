@@ -70,8 +70,8 @@ extern "C" int APS5_VABI rename_nid_postfix(const char* from, const char* to) {
     if (!from || !to) { errno = 14; return -1; }
     if (!*from || !*to) { errno = 2; return -1; }
     try {
-        const auto source = ResolvePath_nid_no_patch(from);
-        const auto destination = ResolvePath_nid_no_patch(to);
+        const auto source = ResolvePathNoFollow_nid_no_patch(from);
+        const auto destination = ResolvePathNoFollow_nid_no_patch(to);
         const int error = RenamePath_nid_no_patch(source, destination);
         if (error) { errno = error; return -1; }
         RecordWrittenPath_nid_no_patch(source);

@@ -695,7 +695,7 @@ int64_t APS5_VABI lseek_nid_postfix(int d, int64_t offset, int whence) {
 int APS5_VABI mkdir_nid_postfix(const char* path, uint16_t mode) {
     if (const int error = PathError(path)) return PosixFailure(error);
     std::filesystem::path native;
-    if (const int error = ResolvePathError_nid_no_patch(path, native)) return PosixFailure(error);
+    if (const int error = ResolvePathError_nid_no_patch(path, native, false)) return PosixFailure(error);
     if (NativeMkdir(native, mode) != 0) {
         const int nativeError = errno;
         const bool blockedByFile = (nativeError == ENOENT || nativeError == EINVAL) && HasNonDirectoryPrefix(native);
@@ -800,8 +800,9 @@ int APS5_VABI lstat_nid_postfix(const char* path, FileStat* sb) {
     if (sb == nullptr) return PosixFailure(GUEST_EFAULT);
     if (const int error = PathError(path)) return PosixFailure(error);
     std::filesystem::path native;
-    if (const int error = ResolvePathError_nid_no_patch(path, native)) return PosixFailure(error);
-    if (!File::FillLinkStat(native, sb)) return PosixResult(SceErrorFromErrno(errno));
+    if (const int error = ResolvePathError_nid_no_patch(path, native, false)) return PosixFailure(error);
+    try { if (!File::FillLinkStat(native, sb)) return PosixResult(SceErrorFromErrno(errno)); }
+    catch (const std::filesystem::filesystem_error& failure) { return PosixFailure(FilesystemError(failure.code())); }
     return 0;
 }
 
@@ -938,7 +939,7 @@ int APS5_VABI sceKernelMkdir(const char* path, uint16_t mode) {
     if (path == nullptr) throw std::invalid_argument("sceKernelMkdir: path is null");
     if (!*path) return SceErrorFromErrno(GUEST_ENOENT);
     std::filesystem::path native;
-    if (const int error = ResolvePathError_nid_no_patch(path, native)) return SceKernelError(error);
+    if (const int error = ResolvePathError_nid_no_patch(path, native, false)) return SceKernelError(error);
     while (!native.has_filename() && native.has_relative_path()) native = native.parent_path();
     std::error_code error;
     if (std::filesystem::exists(native, error)) return SceErrorFromErrno(GUEST_EEXIST);
@@ -1141,11 +1142,11 @@ int APS5_VABI sceKernelRename(const char* from, const char* to) {
     if (from == nullptr || to == nullptr) throw std::invalid_argument("sceKernelRename: path is null");
     if (*from == '\0' || *to == '\0') return SceErrorFromErrno(GUEST_ENOENT);
     std::filesystem::path source;
-    if (const int error = ResolvePathError_nid_no_patch(from, source)) return SceKernelError(error);
+    if (const int error = ResolvePathError_nid_no_patch(from, source, false)) return SceKernelError(error);
     std::error_code error;
-    if (!std::filesystem::exists(source, error)) return SceErrorFromErrno(GUEST_ENOENT);
+    if (!std::filesystem::exists(std::filesystem::symlink_status(source, error))) return SceErrorFromErrno(GUEST_ENOENT);
     std::filesystem::path destination;
-    if (const int result = ResolvePathError_nid_no_patch(to, destination)) return SceKernelError(result);
+    if (const int result = ResolvePathError_nid_no_patch(to, destination, false)) return SceKernelError(result);
     std::filesystem::rename(source, destination, error);
     if (error) return SceErrorFromErrno(GUEST_EIO);
     RecordWrittenPath_nid_no_patch(source);
@@ -1157,7 +1158,7 @@ int APS5_VABI sceKernelRmdir(const char* path) {
     if (path == nullptr) throw std::invalid_argument("sceKernelRmdir: path is null");
     if (*path == '\0') return SceErrorFromErrno(GUEST_ENOENT);
     std::filesystem::path native;
-    if (const int error = ResolvePathError_nid_no_patch(path, native)) return SceKernelError(error);
+    if (const int error = ResolvePathError_nid_no_patch(path, native, false)) return SceKernelError(error);
     std::error_code error;
     if (std::filesystem::is_symlink(native, error)) return SceErrorFromErrno(GUEST_ENOTDIR);
     if (!std::filesystem::is_directory(native, error)) {

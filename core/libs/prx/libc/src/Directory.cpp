@@ -63,6 +63,7 @@ struct Directory {
 };
 std::uint8_t DirectoryType(const std::filesystem::path& path) {
     std::error_code error;
+    if (ReadStoredGuestLink_nid_no_patch(path)) return 10;
     switch (std::filesystem::symlink_status(path, error).type()) {
     case std::filesystem::file_type::regular: return 8;
     case std::filesystem::file_type::directory: return 4;

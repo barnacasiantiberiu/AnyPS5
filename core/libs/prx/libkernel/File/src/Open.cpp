@@ -166,7 +166,22 @@ static int SceIoErrorFromErrno(int error) {
     return static_cast<int>(0x80020000u | static_cast<unsigned>(guest));
 }
 
-static int OpenNative(const std::filesystem::path& native, int flags, std::uint16_t mode) {
+static int OpenNative(const std::filesystem::path& path, int flags, std::uint16_t mode) {
+    std::filesystem::path native;
+    try {
+        const bool follow = !(flags & SCE_KERNEL_O_NOFOLLOW) &&
+            (flags & (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_EXCL)) != (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_EXCL);
+        native = ResolveNativeLinks_nid_no_patch(path, follow);
+        if (!follow && (flags & (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_EXCL)) == (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_EXCL)) {
+            std::error_code error;
+            if (std::filesystem::exists(std::filesystem::symlink_status(native, error))) return SceErrorFromErrno(EEXIST);
+        }
+        if ((flags & SCE_KERNEL_O_NOFOLLOW) != 0 && (flags & (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_EXCL)) != (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_EXCL)) {
+            constexpr int GuestEmlink = 31;
+            std::error_code error;
+            if (ReadStoredGuestLink_nid_no_patch(native) || std::filesystem::is_symlink(native, error)) return SceErrorFromErrno(GuestEmlink);
+        }
+    } catch (const std::filesystem::filesystem_error& error) { return SceKernelError(FilesystemError(error.code())); }
 #ifdef _WIN32
     if ((flags & (SCE_KERNEL_O_DIRECTORY | SCE_KERNEL_O_CREAT)) == SCE_KERNEL_O_DIRECTORY) {
         std::error_code error;
@@ -174,11 +189,6 @@ static int OpenNative(const std::filesystem::path& native, int flags, std::uint1
         if (std::filesystem::exists(status) && !std::filesystem::is_directory(status)) return SceErrorFromErrno(ENOTDIR);
     }
 #endif
-    if ((flags & SCE_KERNEL_O_NOFOLLOW) != 0 && (flags & (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_EXCL)) != (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_EXCL)) {
-        constexpr int GuestEmlink = 31;
-        std::error_code error;
-        if (std::filesystem::is_symlink(native, error)) return SceErrorFromErrno(GuestEmlink);
-    }
     int fd = NativeOpen(native, MapFlags(flags), mode);
 #ifdef _WIN32
     if (fd < 0 && (errno != ENOENT || !native.has_filename())) {
@@ -229,7 +239,7 @@ int APS5_VABI sceKernelOpen(const char* path, int flags, std::uint16_t mode) {
         return fd;
     }
     std::filesystem::path native;
-    if (const int error = ResolvePathError_nid_no_patch(path, native)) return SceKernelError(error);
+    if (const int error = ResolvePathError_nid_no_patch(path, native, false)) return SceKernelError(error);
     return OpenNative(native, flags, mode);
 }
 
@@ -335,7 +345,7 @@ int APS5_VABI sceKernelUnlink(const char* path) {
     }
     if (*path == '\0') return SceErrorFromErrno(2);
     std::filesystem::path native;
-    if (const int error = ResolvePathError_nid_no_patch(path, native)) return SceKernelError(error);
+    if (const int error = ResolvePathError_nid_no_patch(path, native, false)) return SceKernelError(error);
     constexpr int GuestEperm = 1;
     std::error_code error;
     if (std::filesystem::is_directory(std::filesystem::symlink_status(native, error))) return SceErrorFromErrno(GuestEperm);

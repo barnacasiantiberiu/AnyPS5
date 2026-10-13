@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cstdarg>
 #include <cstdint>
@@ -97,9 +98,11 @@ int GuestError(const std::error_code& error) {
 }
 
 std::int64_t CopyLinkTarget(const std::string& target, char* buffer, std::size_t size) {
-    const auto count = std::min(size, target.size());
+    const auto decoded = GuestLinks::Decode_nid_no_patch(target);
+    const auto& contents = decoded ? *decoded : target;
+    const auto count = std::min(size, contents.size());
     if (count != 0 && buffer == nullptr) return Fail(GuestEfault);
-    if (count != 0) std::memcpy(buffer, target.data(), count);
+    if (count != 0) std::memcpy(buffer, contents.data(), count);
     return static_cast<std::int64_t>(count);
 }
 
@@ -115,6 +118,39 @@ struct SymbolicLinkReparseData {
     ULONG flags;
 };
 constexpr ULONG SymbolicLinkRelative = 1;
+
+int CreateStoredLink(const std::filesystem::path& path, const std::string& contents) {
+    static std::atomic<std::uint64_t> serial{0};
+    std::filesystem::path temporary;
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    for (int attempt = 0; attempt != 32; ++attempt) {
+        temporary = path.parent_path() / (".anyps5-link-" + std::to_string(GetCurrentProcessId()) + "-" +
+            std::to_string(GetTickCount64()) + "-" + std::to_string(serial.fetch_add(1)));
+        handle = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (handle != INVALID_HANDLE_VALUE) break;
+        if (GetLastError() != ERROR_FILE_EXISTS && GetLastError() != ERROR_ALREADY_EXISTS)
+            return FilesystemError(std::error_code(static_cast<int>(GetLastError()), std::system_category()));
+    }
+    if (handle == INVALID_HANDLE_VALUE) return GuestEexist;
+    CloseHandle(handle);
+    const auto stream = temporary.wstring() + GuestLinkStream;
+    handle = CreateFileW(stream.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD failure = 0;
+    if (handle == INVALID_HANDLE_VALUE) failure = GetLastError();
+    else {
+        const auto data = std::string(GuestLinkMagic) + contents;
+        DWORD written = 0;
+        if (!WriteFile(handle, data.data(), static_cast<DWORD>(data.size()), &written, nullptr) || written != data.size() || !FlushFileBuffers(handle))
+            failure = GetLastError() ? GetLastError() : ERROR_WRITE_FAULT;
+        CloseHandle(handle);
+    }
+    if (!failure && !MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH)) failure = GetLastError();
+    if (failure) {
+        DeleteFileW(temporary.c_str());
+        return FilesystemError(std::error_code(static_cast<int>(failure), std::system_category()));
+    }
+    return 0;
+}
 
 bool ReadRelativeSymbolicLink(const std::filesystem::path& native, std::string& target) {
     const HANDLE handle = CreateFileW(native.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -141,6 +177,7 @@ bool ReadRelativeSymbolicLink(const std::filesystem::path& native, std::string& 
 #endif
 
 std::int64_t ReadNativeLink(const std::filesystem::path& native, char* buffer, std::size_t size) {
+    if (const auto stored = ReadStoredGuestLink_nid_no_patch(native)) return CopyLinkTarget(*stored, buffer, size);
 #ifdef _WIN32
     const DWORD attributes = GetFileAttributesW(native.wstring().c_str());
     if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
@@ -203,8 +240,9 @@ std::int64_t APS5_VABI readlink_nid_postfix(const char* path, char* buffer, std:
     if (*path == '\0') return Fail(GuestEnoent);
     if (size > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) return Fail(GuestEinval);
     std::filesystem::path native;
-    if (const int error = ResolvePathError_nid_no_patch(path, native)) return Fail(error);
-    return ReadNativeLink(native, buffer, size);
+    if (const int error = ResolvePathError_nid_no_patch(path, native, false)) return Fail(error);
+    try { return ReadNativeLink(native, buffer, size); }
+    catch (const std::filesystem::filesystem_error& failure) { return Fail(FilesystemError(failure.code())); }
 }
 
 std::int64_t APS5_VABI readlinkat_nid_postfix(int fd, const char* path, char* buffer, std::size_t size) {
@@ -215,8 +253,10 @@ std::int64_t APS5_VABI readlinkat_nid_postfix(int fd, const char* path, char* bu
     int error = 0;
     const char* base = GetDirectoryDescriptorPath_nid_no_patch(fd, &error);
     if (base == nullptr) return Fail(error);
-    return ReadNativeLink(std::filesystem::path(reinterpret_cast<const char8_t*>(base)) /
-                          std::filesystem::path(reinterpret_cast<const char8_t*>(path)), buffer, size);
+    try {
+        return ReadNativeLink(ResolveNativeLinks_nid_no_patch(std::filesystem::path(reinterpret_cast<const char8_t*>(base)) /
+                          std::filesystem::path(reinterpret_cast<const char8_t*>(path)), false), buffer, size);
+    } catch (const std::filesystem::filesystem_error& failure) { return Fail(FilesystemError(failure.code())); }
 }
 
 std::int64_t APS5_VABI pathconf_nid_postfix(const char* path, int name) {
@@ -263,8 +303,8 @@ int APS5_VABI link_nid_postfix(const char* existing, const char* created) {
     if (existing == nullptr || created == nullptr) return static_cast<int>(Fail(GuestEfault));
     if (*existing == '\0' || *created == '\0') return static_cast<int>(Fail(GuestEnoent));
     std::filesystem::path source, destination;
-    if (const int error = ResolvePathError_nid_no_patch(existing, source)) return static_cast<int>(Fail(error));
-    if (const int error = ResolvePathError_nid_no_patch(created, destination)) return static_cast<int>(Fail(error));
+    if (const int error = ResolvePathError_nid_no_patch(existing, source, false)) return static_cast<int>(Fail(error));
+    if (const int error = ResolvePathError_nid_no_patch(created, destination, false)) return static_cast<int>(Fail(error));
     std::error_code error;
     const auto status = std::filesystem::symlink_status(source, error);
     if (!std::filesystem::exists(status)) return static_cast<int>(Fail(GuestEnoent));
@@ -294,37 +334,26 @@ int APS5_VABI fchdir_nid_postfix(int fd) {
 int APS5_VABI symlink_nid_postfix(const char* target, const char* created) {
     if (target == nullptr || created == nullptr) return static_cast<int>(Fail(GuestEfault));
     if (*target == '\0' || *created == '\0') return static_cast<int>(Fail(GuestEnoent));
-    if (*target == '/') {
-        NotImplemented_nid_no_patch("symlink: absolute targets");
-        return -1;
-    }
+    if (std::strlen(target) >= GuestPathMax || std::strlen(created) >= GuestPathMax) return static_cast<int>(Fail(GuestEnametoolong));
     std::filesystem::path native;
-    if (const int error = ResolvePathError_nid_no_patch(created, native)) return static_cast<int>(Fail(error));
+    if (const int error = ResolvePathError_nid_no_patch(created, native, false)) return static_cast<int>(Fail(error));
     std::error_code error;
 #ifdef _WIN32
     if (GetFileAttributesW(native.wstring().c_str()) != INVALID_FILE_ATTRIBUTES) return static_cast<int>(Fail(GuestEexist));
 #else
     if (std::filesystem::exists(std::filesystem::symlink_status(native, error))) return static_cast<int>(Fail(GuestEexist));
 #endif
-    if (!std::filesystem::is_directory(native.parent_path(), error)) return static_cast<int>(Fail(GuestEnoent));
-    const std::filesystem::path contents(target);
-    const bool directory = std::filesystem::is_directory(native.parent_path() / contents, error);
+    const auto parentStatus = std::filesystem::status(native.parent_path(), error);
+    if (error) return static_cast<int>(Fail(FilesystemError(error)));
+    if (!std::filesystem::exists(parentStatus)) return static_cast<int>(Fail(GuestEnoent));
+    if (!std::filesystem::is_directory(parentStatus)) return static_cast<int>(Fail(GuestEnotdir));
+    const std::string contents(*target == '/' || std::string_view(target).starts_with(GuestLinks::Prefix) ?
+        GuestLinks::Encode_nid_no_patch(target) : target);
 #ifdef _WIN32
-    DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
-    if (directory) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
-    if (!CreateSymbolicLinkW(native.wstring().c_str(), std::filesystem::path(contents).make_preferred().wstring().c_str(), flags)) {
-        const DWORD code = GetLastError();
-        if (code == ERROR_PRIVILEGE_NOT_HELD) return static_cast<int>(Fail(GuestEperm));
-        if (code == ERROR_ALREADY_EXISTS || code == ERROR_FILE_EXISTS) return static_cast<int>(Fail(GuestEexist));
-        if (code == ERROR_PATH_NOT_FOUND) return static_cast<int>(Fail(GuestEnoent));
-        throw std::system_error(static_cast<int>(code), std::system_category(), "symlink");
-    }
+    if (const int failure = CreateStoredLink(native, contents)) return static_cast<int>(Fail(failure));
 #else
-    if (directory)
-        std::filesystem::create_directory_symlink(contents, native, error);
-    else
-        std::filesystem::create_symlink(contents, native, error);
-    if (error) throw std::system_error(error, "symlink");
+    std::filesystem::create_symlink(std::filesystem::u8path(contents), native, error);
+    if (error) return static_cast<int>(Fail(FilesystemError(error)));
 #endif
     RecordWrittenPath_nid_no_patch(native);
     return 0;
@@ -366,6 +395,7 @@ int APS5_VABI mkdirat_nid_postfix(int fd, const char* path, std::uint16_t mode) 
     if (base == nullptr) return static_cast<int>(Fail(error));
     auto native = std::filesystem::path(reinterpret_cast<const char8_t*>(base));
     const auto relative = std::filesystem::path(reinterpret_cast<const char8_t*>(path));
+    try {
 #ifdef _WIN32
     if (relative.has_root_path()) return static_cast<int>(Fail(GuestEinval));
     auto trimmed = relative;
@@ -373,6 +403,7 @@ int APS5_VABI mkdirat_nid_postfix(int fd, const char* path, std::uint16_t mode) 
     std::error_code ec;
     for (const auto& component : trimmed.parent_path()) {
         native /= component;
+        native = ResolveNativeLinks_nid_no_patch(native, true);
         const auto status = std::filesystem::status(native, ec);
         if (ec) return static_cast<int>(Fail(FilesystemError(ec)));
         if (!std::filesystem::exists(status)) return static_cast<int>(Fail(GuestEnoent));
@@ -384,10 +415,11 @@ int APS5_VABI mkdirat_nid_postfix(int fd, const char* path, std::uint16_t mode) 
         return static_cast<int>(Fail(FilesystemError(errorCode)));
     }
 #else
-    native /= relative;
-    if (::mkdirat(fd, path, static_cast<mode_t>(mode & 0777)) != 0)
+    native = ResolveNativeLinks_nid_no_patch(native / relative, false);
+    if (::mkdir(native.c_str(), static_cast<mode_t>(mode & 0777)) != 0)
         return static_cast<int>(Fail(FilesystemError(std::error_code(errno, std::generic_category()))));
 #endif
+    } catch (const std::filesystem::filesystem_error& failure) { return static_cast<int>(Fail(FilesystemError(failure.code()))); }
     RecordWrittenPath_nid_no_patch(native);
     return 0;
 }

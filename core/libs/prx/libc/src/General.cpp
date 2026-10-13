@@ -12,6 +12,7 @@
 #include <memory>
 #include <set>
 #include <system_error>
+#include <array>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -27,6 +28,7 @@
 #include <unistd.h>
 #endif
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/GuestLinks.hpp"
 #include "prx/libc/include/ApplicationHeap.hpp"
 #include "prx/libc/include/GuestProcess.hpp"
 
@@ -69,6 +71,10 @@ bool HasPrefix(const std::string& path, const std::string& prefix) {
            (path.size() == prefix.size() || path[prefix.size()] == '/');
 }
 
+std::string PathUtf8(const std::filesystem::path& path) {
+    const auto text = path.generic_u8string();
+    return std::string(text.begin(), text.end());
+}
 std::filesystem::path ResolveHostPath(std::filesystem::path root, const std::filesystem::path& relative) {
     const auto direct = root / relative;
     std::error_code error;
@@ -81,10 +87,10 @@ std::filesystem::path ResolveHostPath(std::filesystem::path root, const std::fil
             continue;
         }
         std::optional<std::filesystem::path> matched;
-        const auto name = part.string();
+        const auto name = PathUtf8(part);
         std::filesystem::directory_iterator entry(root, error), end;
         for (; !error && entry != end; entry.increment(error)) {
-            if (!SameName(entry->path().filename().string(), name)) continue;
+            if (!SameName(PathUtf8(entry->path().filename()), name)) continue;
             if (matched) throw std::runtime_error("Ambiguous case-insensitive guest path: " + candidate.string());
             matched = entry->path();
         }
@@ -103,8 +109,8 @@ std::optional<std::filesystem::path> ResolveAlias(const std::string& guestPath) 
     }
     for (const auto& [prefix, host] : aliases.entries) {
         if (!HasPrefix(relative, prefix)) continue;
-        if (relative.size() == prefix.size()) return std::filesystem::path(host).make_preferred();
-        std::filesystem::path result = ResolveHostPath(host, relative.substr(prefix.size() + 1));
+        if (relative.size() == prefix.size()) return std::filesystem::path(reinterpret_cast<const char8_t*>(host.c_str())).make_preferred();
+        std::filesystem::path result = ResolveHostPath(std::filesystem::path(reinterpret_cast<const char8_t*>(host.c_str())), std::filesystem::path(reinterpret_cast<const char8_t*>(relative.c_str() + prefix.size() + 1)));
         return result.make_preferred();
     }
     return std::nullopt;
@@ -117,11 +123,36 @@ struct WorkingDirectory {
 };
 WorkingDirectory& Directories() { static WorkingDirectory state; return state; }
 std::filesystem::path HostPath(WorkingDirectory& state, const std::filesystem::path& guest) {
-    if (auto aliased = ResolveAlias(guest.relative_path().generic_string())) return *aliased;
+    if (auto aliased = ResolveAlias(PathUtf8(guest.relative_path()))) return *aliased;
     return ResolveHostPath(state.root, guest.relative_path()).make_preferred();
 }
-void RequireHostDirectory(WorkingDirectory& state, const std::filesystem::path& guest) {
-    const auto host = HostPath(state, guest);
+std::filesystem::path Resolve(WorkingDirectory& state, const char* path, bool followFinal, unsigned& links);
+std::filesystem::path FollowLinks(WorkingDirectory& state, const std::filesystem::path& path, bool followFinal, unsigned& links) {
+    auto prefix = path.root_path();
+    const auto relative = path.relative_path();
+    for (auto part = relative.begin(); part != relative.end(); ++part) {
+        prefix /= *part;
+        auto next = part;
+        ++next;
+        if (next == relative.end() && !followFinal) return prefix;
+        std::error_code error;
+        const auto stored = ReadStoredGuestLink_nid_no_patch(prefix);
+        if (!stored && !std::filesystem::is_symlink(std::filesystem::symlink_status(prefix, error))) continue;
+        if (++links > 32) throw std::filesystem::filesystem_error("Too many symbolic links", path,
+            std::make_error_code(std::errc::too_many_symbolic_link_levels));
+        const auto target = stored ? std::filesystem::path(reinterpret_cast<const char8_t*>(stored->c_str())) : std::filesystem::read_symlink(prefix, error);
+        if (error) throw std::filesystem::filesystem_error("Reading symbolic link", prefix, error);
+        const auto guest = GuestLinks::Decode_nid_no_patch(stored ? *stored : PathUtf8(target));
+        auto expanded = guest ? (guest->front() == '/' ? Resolve(state, guest->c_str(), false, links) :
+            prefix.parent_path() / std::filesystem::path(reinterpret_cast<const char8_t*>(guest->c_str()))) :
+            (target.is_absolute() ? target : prefix.parent_path() / target);
+        for (; next != relative.end(); ++next) expanded /= *next;
+        return FollowLinks(state, expanded, followFinal, links);
+    }
+    return prefix;
+}
+void RequireHostDirectory(WorkingDirectory& state, const std::filesystem::path& guest, unsigned& links) {
+    const auto host = FollowLinks(state, HostPath(state, guest), true, links);
     std::error_code error;
     const auto status = std::filesystem::status(host, error);
     if (std::filesystem::is_directory(status)) return;
@@ -139,13 +170,13 @@ void RequireHostDirectory(WorkingDirectory& state, const std::filesystem::path& 
 #endif
     throw std::filesystem::filesystem_error("Guest path component is not a directory", host, error);
 }
-std::filesystem::path Resolve(WorkingDirectory& state, const char* path) {
+std::filesystem::path Resolve(WorkingDirectory& state, const char* path, bool followFinal, unsigned& links) {
     std::string text(path);
     for (auto& character : text) if (character == '\\') character = '/';
-    std::filesystem::path input(text);
+    std::filesystem::path input(reinterpret_cast<const char8_t*>(text.c_str()));
 #ifdef _WIN32
     // Preserve the existing ability to pass explicit native drive paths.
-    if (input.has_root_name()) return input;
+    if (input.has_root_name()) return FollowLinks(state, input, followFinal, links);
 #endif
     const auto current = std::filesystem::path("/") / state.current.lexically_relative(state.root);
     const auto relative = (input.is_absolute() ? input : current / input).relative_path();
@@ -153,11 +184,11 @@ std::filesystem::path Resolve(WorkingDirectory& state, const char* path) {
     for (auto part = relative.begin(); part != relative.end(); ++part) {
         if (*part == "..") {
             const auto parent = guest.lexically_normal();
-            if (parent.has_relative_path()) RequireHostDirectory(state, parent);
+            if (parent.has_relative_path()) RequireHostDirectory(state, parent, links);
         }
         guest /= *part;
     }
-    return HostPath(state, guest.lexically_normal());
+    return FollowLinks(state, HostPath(state, guest.lexically_normal()), followFinal, links);
 }
 #ifdef _WIN32
 using WriteMark = FILETIME;
@@ -377,7 +408,52 @@ extern "C" std::filesystem::path ResolvePath_nid_no_patch(const char* path) {
     if (!path) { APS5_INVALID_ARG_EX; }
     auto& state = Directories();
     std::lock_guard lock(state.mutex);
-    return Resolve(state, path);
+    unsigned links = 0;
+    return Resolve(state, path, true, links);
+}
+
+extern "C" std::optional<std::string> ReadStoredGuestLink_nid_no_patch(const std::filesystem::path& path) {
+#ifdef _WIN32
+    const auto attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) return std::nullopt;
+    const auto name = path.wstring() + GuestLinkStream;
+    const auto handle = CreateFileW(name.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, 0, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        const auto error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND || error == ERROR_INVALID_NAME) return std::nullopt;
+        throw std::filesystem::filesystem_error("Opening guest link metadata", path, std::error_code(error, std::system_category()));
+    }
+    const std::unique_ptr<void, decltype(&CloseHandle)> owner(handle, &CloseHandle);
+    LARGE_INTEGER size{};
+    std::array<char, 2100> bytes{};
+    DWORD count = 0;
+    if (!GetFileSizeEx(handle, &size) || size.QuadPart <= 0 || size.QuadPart > static_cast<LONGLONG>(bytes.size()) ||
+        !ReadFile(handle, bytes.data(), static_cast<DWORD>(size.QuadPart), &count, nullptr) || count != size.QuadPart)
+        throw std::filesystem::filesystem_error("Reading guest link metadata", path, std::make_error_code(std::errc::io_error));
+    std::string_view contents(bytes.data(), count);
+    if (!contents.starts_with(GuestLinkMagic) || contents.size() == GuestLinkMagic.size() || contents.find('\0') != std::string_view::npos)
+        throw std::filesystem::filesystem_error("Malformed guest link metadata", path, std::make_error_code(std::errc::invalid_argument));
+    return std::string(contents.substr(GuestLinkMagic.size()));
+#else
+    (void)path;
+    return std::nullopt;
+#endif
+}
+
+extern "C" std::filesystem::path ResolvePathNoFollow_nid_no_patch(const char* path) {
+    if (!path) { APS5_INVALID_ARG_EX; }
+    auto& state = Directories();
+    std::lock_guard lock(state.mutex);
+    unsigned links = 0;
+    return Resolve(state, path, false, links);
+}
+
+extern "C" std::filesystem::path ResolveNativeLinks_nid_no_patch(const std::filesystem::path& path, bool followFinal) {
+    auto& state = Directories();
+    std::lock_guard lock(state.mutex);
+    unsigned links = 0;
+    return FollowLinks(state, path, followFinal, links);
 }
 
 extern "C" int SetWorkingDirectory_nid_no_patch(const char* resolved) {
@@ -407,7 +483,8 @@ extern "C" int APS5_VABI chdir_nid_postfix(const char* path) {
     try {
         auto& state = Directories();
         std::lock_guard lock(state.mutex);
-        const auto resolved = Resolve(state, path);
+        unsigned links = 0;
+        const auto resolved = Resolve(state, path, true, links);
         const int error = SetWorkingDirectory(state, resolved);
         if (error) { errno = error; return -1; }
         return 0;

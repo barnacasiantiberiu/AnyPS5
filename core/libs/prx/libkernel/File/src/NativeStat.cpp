@@ -2,6 +2,7 @@
 #include "prx/libkernel/File/include/SharedMemory.hpp"
 #include "prx/libkernel/File/include/DirectoryDescriptor.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/GuestLinks.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -156,8 +157,24 @@ bool FillFileStatFromDescriptor(int fd, FileStat* sb) {
 
 bool FillLinkStat(const std::filesystem::path& nativePath, FileStat* sb) {
     NativeStat st{};
+    if (const auto stored = ReadStoredGuestLink_nid_no_patch(nativePath)) {
+        if (DoStat(nativePath, &st) != 0) return false;
+        CopyNativeStat(st, sb);
+        const auto decoded = GuestLinks::Decode_nid_no_patch(*stored);
+        sb->st_mode = 0120777;
+        sb->st_size = static_cast<std::int64_t>(decoded ? decoded->size() : stored->size());
+        return true;
+    }
     if (DoLstat(nativePath, &st) != 0) return false;
     CopyNativeStat(st, sb);
+#ifndef _WIN32
+    if (S_ISLNK(st.st_mode)) {
+        std::error_code error;
+        const auto target = std::filesystem::read_symlink(nativePath, error);
+        if (!error) if (const auto decoded = GuestLinks::Decode_nid_no_patch(target.generic_string()))
+            sb->st_size = static_cast<std::int64_t>(decoded->size());
+    }
+#endif
     return true;
 }
 
