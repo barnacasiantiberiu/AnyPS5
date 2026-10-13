@@ -70,6 +70,7 @@ class ReadmeStatusTests(unittest.TestCase):
         for label, asset in [("libraries", "badge-libraries.svg"), ("shaders", "badge-shaders.svg"),
                              ("progress map", "progress.svg")]:
             self.assertIn(f"[![{label}]({PAGE}{asset}?v={versions[0]})]({PAGE})", text)
+        self.assertIn(f"[![progress history]({PAGE}history.svg)]({PAGE}history.html)", text)
         self.assertTrue(text.endswith("Keep this text.\n"))
         self.update("--check")
         self.update()

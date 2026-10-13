@@ -34,6 +34,7 @@ def render(root):
              f"[![libraries]({PAGE}badge-libraries.svg?v={version})]({PAGE}) "
              f"[![shaders]({PAGE}badge-shaders.svg?v={version})]({PAGE})", "",
              f"[![progress map]({PAGE}progress.svg?v={version})]({PAGE})", "",
+             f"[![progress history]({PAGE}history.svg)]({PAGE}history.html)", "",
              "<sub>* System libraries: percentage of the functions known to the project so far "
              "(declared in [core/libs/prx](core/libs/prx)), not of every PS5 system function. "
              "The total grows as more functions are declared.</sub>", "", END]

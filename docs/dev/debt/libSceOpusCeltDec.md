@@ -1,0 +1,5 @@
+# libSceOpusCeltDec technical debt
+
+### Unknown function info
+
+- [libSceOpusCeltDec](../../../core/libs/prx/libSceOpusCeltDec/Export.cpp) shares the FFmpeg decoder of [libSceOpusDec](../../../core/libs/prx/libSceOpusDec/OpusDecoder.hpp) and has the same limits. The signatures match libSceOpusDec's in [ProsperoRadio](https://github.com/blackbearreloaded/ProsperoRadio/blob/2c4029c3a8f43e9e1dfef98374d94d99b14d745d/src/opus_decoder.cpp); [public PS5 decoder research](https://github.com/blackbearreloaded/ps5-hardware-audio-decoding/blob/26be5a12f92b2cdc67f8a9e082fd69ae0e9a35a2/docs/DECODING.md#direct-opus-abi) gives it only the CELT-only TOC configurations 16 to 31, so SILK and hybrid packets throw; the console's error for them is unknown. The 640-byte state size is assumed equal to libSceOpusDec's. Local tests validate decoded audio and buffer boundaries, not exact PCM equivalence with PS5. PPSA99001 imports it and opens it only as a fallback when libSceOpusDec reports a retryable error for a CELT packet, which libSceOpusDec here never returns, so the fallback is not reached

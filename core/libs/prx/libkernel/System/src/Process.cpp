@@ -59,6 +59,7 @@ struct DaemonRegistration {
 } daemonRegistration;
 
 constexpr int sceInvalidArgument = static_cast<int>(0x80020016u);
+constexpr int errnoNoSuchProcess = 3;
 constexpr int errnoNoChild = 10;
 constexpr int errnoBadAddress = 14;
 constexpr int errnoInvalidArgument = 22;
@@ -288,6 +289,33 @@ int APS5_VABI waitpid_nid_postfix(int pid, int* status, int options) {
     return GuestWaitPid_nid_no_patch(pid, status, options);
 }
 
+int APS5_VABI getrlimit_nid_postfix(int resource, GuestResourceLimit* limit);
+
+int APS5_VABI setrlimit_nid_postfix(int resource, const GuestResourceLimit* limit) {
+    if (limit == nullptr) {
+        *__error_nid_postfix() = guestFault;
+        return -1;
+    }
+    if (resource < 0 || resource >= guestRlimitCount) {
+        *__error_nid_postfix() = guestInvalid;
+        return -1;
+    }
+
+    GuestResourceLimit requested = *limit;
+    if (requested.rlim_cur < 0)
+        requested.rlim_cur = guestRlimitInfinity;
+    if (requested.rlim_max < 0)
+        requested.rlim_max = guestRlimitInfinity;
+    if (requested.rlim_cur > requested.rlim_max)
+        requested.rlim_cur = requested.rlim_max;
+
+    GuestResourceLimit current{};
+    getrlimit_nid_postfix(resource, &current);
+    if (requested.rlim_cur != current.rlim_cur || requested.rlim_max != current.rlim_max)
+        throw std::runtime_error("setrlimit: changing the limit of resource " + std::to_string(resource) + " is not supported");
+    return 0;
+}
+
 int APS5_VABI wait_nid_postfix(int* status) {
     return waitpid_nid_postfix(-1, status, 0);
 }
@@ -324,6 +352,14 @@ int APS5_VABI sceKernelGetCurrentCpu(void) {
     const auto index = static_cast<unsigned>(cpu);
 #endif
     return GuestCpuFromHost(index, scePthreadSelf()->affinity.load(std::memory_order_relaxed));
+}
+
+int APS5_VABI sceKernelGetMainSocId(void) {
+    return 0;
+}
+
+int APS5_VABI sceKernelGetCpumode(void) {
+    return 0;
 }
 
 std::uint64_t APS5_VABI sceKernelGetGPI(void) {
@@ -525,6 +561,15 @@ int APS5_VABI setreuid_nid_postfix(std::uint32_t ruid, std::uint32_t euid) {
         throw std::runtime_error("setreuid: unsupported real user id " + std::to_string(ruid));
     if (euid != 0 && euid != unchanged)
         throw std::runtime_error("setreuid: unsupported effective user id " + std::to_string(euid));
+    return 0;
+}
+
+int APS5_VABI setregid_nid_postfix(std::uint32_t rgid, std::uint32_t egid) {
+    constexpr std::uint32_t unchanged = 0xffffffffu;
+    if (rgid != 0 && rgid != unchanged)
+        throw std::runtime_error("setregid: unsupported real group id " + std::to_string(rgid));
+    if (egid != 0 && egid != unchanged)
+        throw std::runtime_error("setregid: unsupported effective group id " + std::to_string(egid));
     return 0;
 }
 

@@ -43,6 +43,7 @@
 #include <fstream>
 #include <cctype>
 #include <cstdlib>
+#include <ctime>
 #include <mutex>
 #include <SDL_loadso.h>
 #include <SDL_error.h>
@@ -255,6 +256,9 @@ struct VulkanDevice::State {
     void* uploadMapping = nullptr;
     VkDeviceSize uploadSize = 0;
     VkPhysicalDeviceProperties properties{};
+    std::string driverInfo;
+    PFN_vkGetCalibratedTimestampsKHR calibratedTimestamps = nullptr;
+    VkTimeDomainKHR hostTimeDomain = VK_TIME_DOMAIN_DEVICE_KHR;
     VkPhysicalDeviceSubgroupProperties subgroup{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
     std::vector<std::uint32_t> capabilities{1};
     std::vector<std::string_view> spirvExtensions;
@@ -1039,6 +1043,12 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
     std::vector<VkExtensionProperties> availableExtensions(extensionCount);
     check(enumerateDeviceExtensions(selected, nullptr, &extensionCount, availableExtensions.data()), "vkEnumerateDeviceExtensionProperties");
     const auto hasExtension = [&](const char* name) { return std::any_of(availableExtensions.begin(), availableExtensions.end(), [&](const auto& item) { return std::strcmp(item.extensionName, name) == 0; }); };
+    if (hasExtension(VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME)) {
+        VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 driverProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &driver};
+        state->InstanceFunction<PFN_vkGetPhysicalDeviceProperties2>("vkGetPhysicalDeviceProperties2")(selected, &driverProperties);
+        state->driverInfo = std::string(driver.driverName) + " " + driver.driverInfo;
+    }
     auto byteFeatures = QueryBdaByteFeatures(selected, state->InstanceFunction<PFN_vkGetPhysicalDeviceFeatures2>("vkGetPhysicalDeviceFeatures2"), availableExtensions);
     auto bdaFeatures = QueryBdaFeatures(selected, state->InstanceFunction<PFN_vkGetPhysicalDeviceFeatures2>("vkGetPhysicalDeviceFeatures2"), availableExtensions);
     require(hasExtension(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME), "VK_KHR_shader_float_controls is unavailable");
@@ -1433,6 +1443,8 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
     state->samplerAnisotropy = true;
     state->textureCompressionBC = true;
     deviceInfo.pEnabledFeatures = &enabled;
+    const char* calibratedTimestamps = !PerformanceTrace::Configured() ? nullptr : hasExtension(VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) ? VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME : hasExtension(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) ? VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME : nullptr;
+    if (calibratedTimestamps != nullptr) deviceExtensions.push_back(calibratedTimestamps);
     deviceInfo.enabledExtensionCount = static_cast<std::uint32_t>(deviceExtensions.size());
     deviceInfo.ppEnabledExtensionNames = deviceExtensions.data();
     if (state->meshShader) {
@@ -1584,6 +1596,25 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
     check(state->InstanceFunction<PFN_vkCreateDevice>("vkCreateDevice")(selected, &deviceInfo, nullptr, &state->device), "vkCreateDevice");
     state->shaderProfile = std::move(shaderProfile);
     if (compileOnly) return;
+    if (calibratedTimestamps != nullptr) {
+        const bool khr = std::strcmp(calibratedTimestamps, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) == 0;
+        const auto domains = reinterpret_cast<PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR>(state->instanceProc(state->instance, khr ? "vkGetPhysicalDeviceCalibrateableTimeDomainsKHR" : "vkGetPhysicalDeviceCalibrateableTimeDomainsEXT"));
+        std::uint32_t domainCount = 0;
+        std::vector<VkTimeDomainKHR> available;
+        if (domains != nullptr && domains(selected, &domainCount, nullptr) == VK_SUCCESS) {
+            available.resize(domainCount);
+            if (domains(selected, &domainCount, available.data()) != VK_SUCCESS) available.clear();
+        }
+#ifdef _WIN32
+        const auto host = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR;
+#else
+        const auto host = VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR;
+#endif
+        if (std::ranges::find(available, VK_TIME_DOMAIN_DEVICE_KHR) != available.end() && std::ranges::find(available, host) != available.end()) {
+            state->hostTimeDomain = host;
+            state->calibratedTimestamps = state->DeviceFunction<PFN_vkGetCalibratedTimestampsKHR>(khr ? "vkGetCalibratedTimestampsKHR" : "vkGetCalibratedTimestampsEXT");
+        }
+    }
     state->DeviceFunction<PFN_vkGetDeviceQueue>("vkGetDeviceQueue")(state->device, family, 0, &state->queue);
     APS5_LOG_OUT("Vulkan device ready device=%p queue=%p family=%u", reinterpret_cast<void*>(state->device), reinterpret_cast<void*>(state->queue), family);
     VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -2942,6 +2973,34 @@ std::string VulkanDevice::DeviceName() const {
     return state->properties.deviceName;
 }
 
+std::string VulkanDevice::DriverInfo() const {
+    return state->driverInfo.empty() ? std::to_string(state->properties.driverVersion) : state->driverInfo;
+}
+
+bool VulkanDevice::CalibrateClock(double& gpuNs, std::chrono::steady_clock::time_point& cpu) const {
+    if (state->calibratedTimestamps == nullptr) return false;
+    const std::array<VkCalibratedTimestampInfoKHR, 2> domains{VkCalibratedTimestampInfoKHR{VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, nullptr, VK_TIME_DOMAIN_DEVICE_KHR}, VkCalibratedTimestampInfoKHR{VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, nullptr, state->hostTimeDomain}};
+    std::array<std::uint64_t, 2> stamps{};
+    std::uint64_t deviation = 0;
+    if (state->calibratedTimestamps(state->device, static_cast<std::uint32_t>(domains.size()), domains.data(), stamps.data(), &deviation) != VK_SUCCESS) return false;
+#ifdef _WIN32
+    LARGE_INTEGER counter{};
+    LARGE_INTEGER frequency{};
+    QueryPerformanceCounter(&counter);
+    const auto now = std::chrono::steady_clock::now();
+    QueryPerformanceFrequency(&frequency);
+    const double sinceNs = static_cast<double>(static_cast<std::uint64_t>(counter.QuadPart) - stamps[1]) * 1e9 / static_cast<double>(frequency.QuadPart);
+#else
+    timespec monotonic{};
+    clock_gettime(CLOCK_MONOTONIC, &monotonic);
+    const auto now = std::chrono::steady_clock::now();
+    const double sinceNs = static_cast<double>(static_cast<std::uint64_t>(monotonic.tv_sec) * 1000000000ull + static_cast<std::uint64_t>(monotonic.tv_nsec) - stamps[1]);
+#endif
+    gpuNs = static_cast<double>(stamps[0]) * state->properties.limits.timestampPeriod;
+    cpu = now - std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double, std::nano>(sinceNs));
+    return true;
+}
+
 const std::uint32_t* VulkanDevice::WorkGroupCountLimit() const {
     return state->properties.limits.maxComputeWorkGroupCount;
 }
@@ -2965,6 +3024,7 @@ ShaderRecompiler::SpirvTarget VulkanDevice::buildTarget() const {
     target.fixedPushSlots = state->graphicsPipelineLibrary;
     target.registrationModules = state->graphicsPipelineLibrary;
     target.srgbDecodeFormats = state->srgbDecodeFormats;
+    target.vertexSubgroups = (state->subgroup.supportedStages & VK_SHADER_STAGE_VERTEX_BIT) != 0;
     if (state->meshShader) {
         const auto& mesh = state->meshLimits;
         target.mesh = ShaderRecompiler::MeshTargetLimits{{mesh.maxMeshWorkGroupSize[0], mesh.maxMeshWorkGroupSize[1], mesh.maxMeshWorkGroupSize[2]}, mesh.maxMeshWorkGroupInvocations, std::min(mesh.maxMeshSharedMemorySize, mesh.maxMeshPayloadAndSharedMemorySize), mesh.maxMeshOutputVertices, mesh.maxMeshOutputPrimitives, mesh.maxMeshOutputComponents, std::min(mesh.maxMeshOutputMemorySize, mesh.maxMeshPayloadAndOutputMemorySize), mesh.meshOutputPerVertexGranularity, mesh.meshOutputPerPrimitiveGranularity};

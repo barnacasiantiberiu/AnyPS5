@@ -5,6 +5,7 @@
 #include "prx/libc/include/HostDescriptorFork.hpp"
 #include "prx/libc/include/FilesystemError.hpp"
 #include "prx/libc/include/GuestArena.hpp"
+#include "prx/libkernel/DirectMemory/DirectMemory.hpp"
 #include "prx/libkernel/File/include/File.hpp"
 #include "prx/libkernel/File/include/SharedMemory.hpp"
 #include "prx/libkernel/File/include/DirectoryDescriptor.hpp"
@@ -13,6 +14,7 @@
 #include "prx/libkernel/Socket/include/SocketRuntime.hpp"
 #include "prx/libkernel/File/include/RandomDevice.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
+#include "prx/libkernel/Equeue/Equeue.hpp"
 #include "SceTypes.hpp"
 
 #include <cerrno>
@@ -179,12 +181,14 @@ static int OpenNative(const std::filesystem::path& native, int flags, std::uint1
     }
     int fd = NativeOpen(native, MapFlags(flags), mode);
 #ifdef _WIN32
-    if (fd < 0 && errno != ENOENT) {
+    if (fd < 0 && (errno != ENOENT || !native.has_filename())) {
+        auto directory = native;
+        while (!directory.has_filename() && directory.has_relative_path()) directory = directory.parent_path();
         std::error_code error;
-        if (std::filesystem::is_directory(native, error)) {
+        if (std::filesystem::is_directory(directory, error)) {
             if ((flags & (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_EXCL)) == (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_EXCL)) errno = EEXIST;
             else if ((flags & SCE_KERNEL_O_ACCMODE) != SCE_KERNEL_O_RDONLY || (flags & (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_TRUNC))) errno = EISDIR;
-            else fd = File::OpenDirectoryDescriptor(native);
+            else fd = File::OpenDirectoryDescriptor(directory);
         }
     }
 #endif
@@ -240,8 +244,10 @@ int OpenInDirectory_nid_no_patch(int directory, const char* path, int flags, std
 int APS5_VABI sceKernelClose(int d) {
     HostDescriptorOperation operation;
     if (d >= GuestSockets::FirstDescriptor) return GuestSockets::Close(d) == 0 ? 0 : SceKernelError(*__error_nid_postfix());
+    EqueueDescriptorClosed(d);
     File::ForgetRandomDevice(d);
     File::ForgetDescriptor(d);
+    ForgetJitSharedMemory(d);
 #ifdef _WIN32
     File::ForgetDirectoryDescriptor(d);
     File::ForgetFileLock(d);
