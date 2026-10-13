@@ -1,14 +1,18 @@
 #include <cstdint>
 #include <cstddef>
-#include "SceTypes.hpp"
-#include "prx/libc/include/General.hpp"
+#include "AppContent.hpp"
 #include "prx/libkernel/AppMetadata/include/AppMetadata.hpp"
 #include <algorithm>
+#include <charconv>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <limits>
+#include <map>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 static constexpr int SCE_APP_CONTENT_ERROR_PARAMETER = static_cast<int>(0x80D90002);
 static constexpr int SCE_APP_CONTENT_ERROR_BUSY = static_cast<int>(0x80D90003);
@@ -22,12 +26,120 @@ static constexpr char TEMPORARY_MOUNT_POINT[] = "/temp0";
 static constexpr char DOWNLOAD_MOUNT_POINT[] = "/download0";
 static constexpr uint32_t TEMPORARY_DATA_OPTION_FORMAT = 1;
 
-struct AppContentAddcontInfo {
-    NpUnifiedEntitlementLabel entitlement_label;
-    uint32_t status;
+namespace {
+
+bool ValidLabel(const NpUnifiedEntitlementLabel* label) {
+    if (!label || label->data[16] != '\0') return false;
+    return std::all_of(label->data, label->data + 16, [](unsigned char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+    });
+}
+
+using AddonKey = std::pair<std::uint32_t, std::string>;
+
+struct Addon {
+    std::filesystem::path directory;
+    std::string mount;
 };
 
-namespace {
+void CheckFilesystem(const std::error_code& error) {
+    if (error) throw std::runtime_error("AppContent filesystem error: " + error.message());
+}
+
+std::filesystem::file_status LinkStatus(const std::filesystem::path& path) {
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(path, error);
+    if (error != std::errc::no_such_file_or_directory) CheckFilesystem(error);
+    return status;
+}
+
+std::vector<std::filesystem::directory_entry> DirectoryEntries(const std::filesystem::path& path) {
+    std::error_code error;
+    std::vector<std::filesystem::directory_entry> entries;
+    std::filesystem::directory_iterator iterator(path, error);
+    CheckFilesystem(error);
+    while (iterator != std::filesystem::directory_iterator{}) {
+        entries.push_back(*iterator);
+        iterator.increment(error);
+        CheckFilesystem(error);
+    }
+    return entries;
+}
+
+struct Addons {
+    std::mutex mutex;
+    std::map<AddonKey, Addon> entries;
+    std::uint64_t nextMount = 0;
+
+    Addons() {
+        const auto* configured = std::getenv("ANYPS5_ADDCONT_ROOT");
+        if (!configured || !*configured) return;
+        std::error_code error;
+        const auto root = std::filesystem::absolute(configured, error);
+        CheckFilesystem(error);
+        const auto rootStatus = std::filesystem::status(root, error);
+        if (error == std::errc::no_such_file_or_directory) return;
+        CheckFilesystem(error);
+        if (!std::filesystem::is_directory(rootStatus)) throw std::invalid_argument("AppContent root must be a directory");
+        for (const auto& service : DirectoryEntries(root)) {
+            const auto name = service.path().filename().string();
+            std::uint32_t serviceLabel = 0;
+            const auto parsed = std::from_chars(name.data(), name.data() + name.size(), serviceLabel);
+            if (parsed.ec != std::errc{} || parsed.ptr != name.data() + name.size() || name != std::to_string(serviceLabel)) continue;
+            const auto serviceStatus = LinkStatus(service.path());
+            if (std::filesystem::is_symlink(serviceStatus)) throw std::invalid_argument("AppContent service directory must not be a symbolic link");
+            if (!std::filesystem::is_directory(serviceStatus)) continue;
+            for (const auto& entry : DirectoryEntries(service.path())) {
+                const auto labelText = entry.path().filename().string();
+                if (labelText.size() != 16) continue;
+                NpUnifiedEntitlementLabel label{};
+                std::memcpy(label.data, labelText.data(), 16);
+                if (!ValidLabel(&label)) continue;
+                const auto entryStatus = LinkStatus(entry.path());
+                if (std::filesystem::is_symlink(entryStatus)) throw std::invalid_argument("AppContent addon directory must not be a symbolic link");
+                if (!std::filesystem::is_directory(entryStatus)) continue;
+                entries.emplace(AddonKey{serviceLabel, labelText}, Addon{entry.path(), {}});
+            }
+        }
+    }
+};
+
+Addons& Installed() {
+    static Addons addons;
+    return addons;
+}
+
+auto FindAddon(Addons& addons, std::uint32_t serviceLabel, const NpUnifiedEntitlementLabel* label) {
+    return addons.entries.find({serviceLabel, std::string(label->data, 16)});
+}
+
+AppContentAddcontInfo MakeInfo(const AddonKey& key) {
+    AppContentAddcontInfo result{};
+    std::memcpy(result.entitlement_label.data, key.second.data(), 16);
+    result.status = 4;
+    return result;
+}
+
+std::uint64_t InstalledSize(const std::filesystem::path& directory) {
+    std::uint64_t total = 0;
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator iterator(directory, error);
+    CheckFilesystem(error);
+    while (iterator != std::filesystem::recursive_directory_iterator{}) {
+        const auto status = iterator->symlink_status(error);
+        CheckFilesystem(error);
+        if (!std::filesystem::is_directory(status)) {
+            if (!std::filesystem::is_regular_file(status)) throw std::invalid_argument("AppContent addon contains a non-regular file");
+            const auto bytes = iterator->file_size(error);
+            CheckFilesystem(error);
+            if (bytes > std::numeric_limits<std::uint64_t>::max() - total) throw std::overflow_error("AppContent addon size overflow");
+            total += bytes;
+        }
+        iterator.increment(error);
+        CheckFilesystem(error);
+    }
+    return total;
+}
 
 struct TemporaryData {
     std::mutex mutex;
@@ -56,26 +168,63 @@ static void ClearDirectory(const std::filesystem::path& directory) {
 extern "C" {
 
 int APS5_VABI sceAppContentAddcontMount(uint32_t service_label, const NpUnifiedEntitlementLabel* entitlement_label, AppContentMountPoint* mount_point) {
- (void)service_label;
- if (!entitlement_label || !mount_point) return SCE_APP_CONTENT_ERROR_PARAMETER;
- return SCE_APP_CONTENT_ERROR_NOT_FOUND;
+    if (!ValidLabel(entitlement_label) || !mount_point) return SCE_APP_CONTENT_ERROR_PARAMETER;
+    auto& addons = Installed();
+    std::lock_guard lock(addons.mutex);
+    const auto found = FindAddon(addons, service_label, entitlement_label);
+    if (found == addons.entries.end()) return SCE_APP_CONTENT_ERROR_NOT_FOUND;
+    auto& addon = found->second;
+    if (!addon.mount.empty()) return SCE_APP_CONTENT_ERROR_BUSY;
+    InstalledSize(addon.directory);
+    const auto mount = "/addcont" + std::to_string(addons.nextMount);
+    if (mount.size() >= sizeof(mount_point->data)) throw std::overflow_error("AppContent mount names exhausted");
+    addon.mount = mount;
+    try { AddPathAlias_nid_no_patch(mount.c_str(), addon.directory.string().c_str()); }
+    catch (...) { addon.mount.clear(); throw; }
+    ++addons.nextMount;
+    *mount_point = {};
+    std::memcpy(mount_point->data, mount.data(), mount.size());
+    return 0;
 }
 
 int APS5_VABI sceAppContentAddcontUnmount(const AppContentMountPoint* mount_point) {
- if (!mount_point) return SCE_APP_CONTENT_ERROR_PARAMETER;
- return SCE_APP_CONTENT_ERROR_NOT_FOUND;
+    if (!mount_point || !std::memchr(mount_point->data, 0, sizeof(mount_point->data))) return SCE_APP_CONTENT_ERROR_PARAMETER;
+    auto& addons = Installed();
+    std::lock_guard lock(addons.mutex);
+    for (auto& [key, addon] : addons.entries) {
+        if (addon.mount.empty() || addon.mount != mount_point->data) continue;
+        BlockPathAlias_nid_no_patch(addon.mount.c_str());
+        addon.mount.clear();
+        return 0;
+    }
+    return SCE_APP_CONTENT_ERROR_NOT_FOUND;
 }
 
 int APS5_VABI sceAppContentGetAddcontInfo(uint32_t service_label, const NpUnifiedEntitlementLabel* entitlement_label, AppContentAddcontInfo* info) {
-    (void)service_label;
-    if (!entitlement_label || !info) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    return SCE_APP_CONTENT_ERROR_DRM_NO_ENTITLEMENT;
+    if (!ValidLabel(entitlement_label) || !info) return SCE_APP_CONTENT_ERROR_PARAMETER;
+    auto& addons = Installed();
+    std::lock_guard lock(addons.mutex);
+    const auto found = FindAddon(addons, service_label, entitlement_label);
+    if (found == addons.entries.end()) return SCE_APP_CONTENT_ERROR_DRM_NO_ENTITLEMENT;
+    *info = MakeInfo(found->first);
+    return 0;
 }
 
 int APS5_VABI sceAppContentGetAddcontInfoList(uint32_t service_label, AppContentAddcontInfo* list, uint32_t list_num, uint32_t* hit_num) {
-    (void)service_label;
     if ((!list || list_num == 0) && !hit_num) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    if (hit_num) *hit_num = 0;
+    auto& addons = Installed();
+    std::lock_guard lock(addons.mutex);
+    std::uint32_t count = 0;
+    for (const auto& [key, addon] : addons.entries) {
+        if (key.first != service_label) continue;
+        if (list && list_num) {
+            if (count == list_num) break;
+            list[count] = MakeInfo(key);
+        }
+        if (count == std::numeric_limits<std::uint32_t>::max()) throw std::overflow_error("AppContent addon count overflow");
+        ++count;
+    }
+    if (hit_num) *hit_num = count;
     return 0;
 }
 
@@ -163,13 +312,25 @@ int APS5_VABI sceAppContentTemporaryDataUnmount(const AppContentMountPoint* moun
 }
 
 
-int APS5_VABI sceAppContentAddcontEnqueueDownload(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceAppContentAddcontEnqueueDownload(uint32_t service_label, const NpUnifiedEntitlementLabel* entitlement_label) {
+    if (!ValidLabel(entitlement_label)) return SCE_APP_CONTENT_ERROR_PARAMETER;
+    auto& addons = Installed();
+    std::lock_guard lock(addons.mutex);
+    const auto found = FindAddon(addons, service_label, entitlement_label);
+    if (found == addons.entries.end()) return SCE_APP_CONTENT_ERROR_DRM_NO_ENTITLEMENT;
+    InstalledSize(found->second.directory);
     return 0;
 }
 
-int APS5_VABI sceAppContentGetAddcontDownloadProgress(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceAppContentGetAddcontDownloadProgress(uint32_t service_label, const NpUnifiedEntitlementLabel* entitlement_label,
+    AppContentAddcontDownloadProgress* progress) {
+    if (!ValidLabel(entitlement_label) || !progress) return SCE_APP_CONTENT_ERROR_PARAMETER;
+    auto& addons = Installed();
+    std::lock_guard lock(addons.mutex);
+    const auto found = FindAddon(addons, service_label, entitlement_label);
+    if (found == addons.entries.end()) return SCE_APP_CONTENT_ERROR_DRM_NO_ENTITLEMENT;
+    const auto size = InstalledSize(found->second.directory);
+    *progress = {size, size};
     return 0;
 }
 }
