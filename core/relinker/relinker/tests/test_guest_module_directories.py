@@ -80,6 +80,10 @@ def main():
                             case / "app0" / "prx" / "consumer.prx.guest.prx"}
                 assert set(artifacts) == expected, artifacts
                 for artifact in artifacts:
+                    original = artifact.with_name(artifact.name.removesuffix(".guest.prx"))
+                    source = case / original.relative_to(case / "app0")
+                    assert original.is_file(), f"Plugin discovery path missing: {original}"
+                    assert original.read_bytes() == source.read_bytes(), original
                     assert artifact.read_bytes().startswith(b"MZ" if windows else b"\x7fELF")
                     assert f"    {artifact.relative_to(case / 'app0').as_posix()}\n" in result.stdout, result.stdout
                 if windows and os.name == "nt":
@@ -92,6 +96,57 @@ def main():
                     consumer = case / "app0" / "prx" / "consumer.prx.guest.prx"
                     needed = needed_libraries(consumer.read_bytes())
                     assert needed == [f"$ORIGIN/{'../' + standard + '/' if standard else ''}provider.prx.guest.prx"], needed
+
+            case = work / f"{windows}-preserve-plugins"
+            plugins = case / "Media" / "Plugins"
+            plugins.mkdir(parents=True)
+            (case / "sce_module").mkdir()
+            source = plugins / "PSN.prx"
+            original_bytes = module_with_symbol(True)
+            source.write_bytes(original_bytes)
+            options = ["--module-dir", "Media/Plugins"]
+            result, output = convert(case, windows, options)
+            assert result.returncode == 0, result.stderr
+            original = case / "app0" / "Media" / "Plugins" / "PSN.prx"
+            assert original.read_bytes() == original_bytes
+            result, _ = convert(case, windows, options)
+            assert result.returncode == 0, result.stderr
+            assert original.read_bytes() == original_bytes
+            original.write_bytes(b"different existing module")
+            output.unlink()
+            generated = original.with_name("PSN.prx.guest.prx")
+            generated.unlink()
+            result, _ = convert(case, windows, options)
+            assert result.returncode == 2 and "Original guest module conflicts" in result.stderr, result.stderr
+            assert original.read_bytes() == b"different existing module"
+            assert not output.exists() and not generated.exists()
+            original.unlink()
+            os.link(source, original)
+            result, _ = convert(case, windows, options)
+            assert result.returncode == 0, result.stderr
+            assert original.read_bytes() == source.read_bytes() == original_bytes
+            (case / "app0" / "sce_module").mkdir()
+            result, _ = convert(case, windows, ["--sce-module-path", str(case / "app0"), *options])
+            assert result.returncode == 0, result.stderr
+            assert original.read_bytes() == original_bytes
+            collision = work / f"{windows}-output-collision"
+            (collision / "sce_module").mkdir(parents=True)
+            (collision / "PSN.prx").write_bytes(original_bytes)
+            (collision / "input.elf").write_bytes(main_fixture())
+            (collision / "app0").mkdir()
+            target = collision / "app0" / "PSN.prx"
+            result = subprocess.run([str(relinker), *(["--windows"] if windows else []),
+                                     "--module-dir", ".", str(collision / "input.elf"), str(target)],
+                                    capture_output=True, text=True, timeout=30)
+            assert result.returncode == 0, result.stderr
+            preserved = collision / "app0" / "app0" / "PSN.prx"
+            target.unlink()
+            os.link(preserved, target)
+            result = subprocess.run([str(relinker), *(["--windows"] if windows else []),
+                                     "--module-dir", ".", str(collision / "input.elf"), str(target)],
+                                    capture_output=True, text=True, timeout=30)
+            assert result.returncode == 2 and "Original guest module conflicts with an output" in result.stderr, result.stderr
+            assert preserved.read_bytes() == target.read_bytes() == original_bytes
 
             case = work / f"{windows}-exclude"
             for name in ("sce_module", "prx"):

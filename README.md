@@ -28,6 +28,8 @@ The [shader recompiler](core/shader/recompiler/Recompiler.cpp) successfully prod
 
 ## Compatibility
 
+Guest module conversion preserves original module files alongside converted modules so engine plugin discovery can supply the required initialization arguments. This prevents the missing-path PSN version error observed in Unity titles; it does not establish full game compatibility.
+
 Per-game progress (stage reached, open blockers, libraries and GPU coverage) is tracked on the [blocker map](https://alxcbtw.github.io/anyps5-roadmap/), a community project built from public GitHub data ([source](https://github.com/AlxcBTW/anyps5-roadmap)). Test reports go in the [Game bring-up](https://github.com/boykopovar/AnyPS5/discussions/categories/game-bring-up) discussions, one thread per title.
 
 ## Input mapping
