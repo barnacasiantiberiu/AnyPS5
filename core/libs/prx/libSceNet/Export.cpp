@@ -3,6 +3,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <iphlpapi.h>
 #else
 #include <arpa/inet.h>
 #include <cerrno>
@@ -12,9 +13,12 @@
 #include <sys/socket.h>
 #include <poll.h>
 #include <unistd.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #endif
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <climits>
 #include <chrono>
 #include <condition_variable>
@@ -82,6 +86,8 @@ constexpr int NET_EPOLL_CTL_DEL = 3;
 constexpr int NET_SOL_SOCKET = 0xFFFF;
 constexpr int NET_SO_SNDTIMEO = 0x1005;
 constexpr int NET_SO_RCVTIMEO = 0x1006;
+constexpr int NET_SO_SCE_SNDTIMEO = 0x1105;
+constexpr int NET_SO_SCE_RCVTIMEO = 0x1106;
 constexpr int NET_SO_NBIO = 0x1200;
 constexpr int NET_SO_REUSEADDR = 0x4;
 constexpr int NET_SO_BROADCAST = 0x20;
@@ -225,9 +231,9 @@ bool native_to_guest_address(const sockaddr_storage& native, void* address, std:
     } else {
         return false;
     }
-    const auto required = static_cast<std::uint32_t>(bytes[0]);
-    std::memcpy(address, bytes, std::min(*length, required));
-    *length = required;
+    const auto copied = std::min<std::uint32_t>(*length, bytes[0]);
+    std::memcpy(address, bytes, copied);
+    *length = copied;
     return true;
 }
 
@@ -451,6 +457,12 @@ std::int64_t message_length(const NetMsghdr* message) {
     return static_cast<std::int64_t>(total);
 }
 
+int timeout_option(int optname) {
+    if (optname == NET_SO_SCE_SNDTIMEO) return NET_SO_SNDTIMEO;
+    if (optname == NET_SO_SCE_RCVTIMEO) return NET_SO_RCVTIMEO;
+    return optname;
+}
+
 int receive_error(const Sock& socket) {
 #ifdef _WIN32
     if (WSAGetLastError() == WSAETIMEDOUT && socket.type != NET_SOCK_STREAM && socket.rcv_timeout_us > 0) return NET_EAGAIN;
@@ -458,6 +470,101 @@ int receive_error(const Sock& socket) {
     (void)socket;
 #endif
     return native_error();
+}
+
+std::string NumericAddress(const sockaddr* address) {
+    char text[INET6_ADDRSTRLEN]{};
+    const void* bytes = nullptr;
+    if (address->sa_family == AF_INET)
+        bytes = &reinterpret_cast<const sockaddr_in*>(address)->sin_addr;
+    else if (address->sa_family == AF_INET6)
+        bytes = &reinterpret_cast<const sockaddr_in6*>(address)->sin6_addr;
+    else return "?";
+    if (!::inet_ntop(address->sa_family, bytes, text, sizeof(text))) return "?";
+    std::string result(text);
+    if (address->sa_family == AF_INET6) {
+        const auto scope = reinterpret_cast<const sockaddr_in6*>(address)->sin6_scope_id;
+        if (scope) result += "%" + std::to_string(scope);
+    }
+    return result;
+}
+
+std::string SocketEndpoint(NativeSocket socket, bool peer) {
+    sockaddr_storage address{};
+    NativeLength length = sizeof(address);
+    const int result = peer ? ::getpeername(socket, reinterpret_cast<sockaddr*>(&address), &length)
+                            : ::getsockname(socket, reinterpret_cast<sockaddr*>(&address), &length);
+    if (result != 0) return "-";
+    const auto* generic = reinterpret_cast<const sockaddr*>(&address);
+    auto text = NumericAddress(generic);
+    if (address.ss_family == AF_INET6) {
+        text = "[" + text + "]:" + std::to_string(ntohs(reinterpret_cast<const sockaddr_in6*>(&address)->sin6_port));
+    } else if (address.ss_family == AF_INET) {
+        text += ":" + std::to_string(ntohs(reinterpret_cast<const sockaddr_in*>(&address)->sin_port));
+    }
+    return text;
+}
+
+int PrintDiagnostic(const std::string& text) {
+    return std::fwrite(text.data(), 1, text.size(), stdout) == text.size() ? 0 : fail(5);
+}
+
+std::string InterfaceLine(const char* name, bool up, bool loopback, const sockaddr* address, unsigned prefix) {
+    return "interface=" + std::string(name) + " up=" + std::to_string(up) + " loopback=" + std::to_string(loopback) +
+        " family=" + std::to_string(address->sa_family == AF_INET ? NET_AF_INET : NET_AF_INET6) +
+        " address=" + NumericAddress(address) + " prefix=" + std::to_string(prefix) + "\n";
+}
+
+int InterfaceReport(std::string& text) {
+    if (!initialize_sockets()) return fail(5);
+    std::vector<std::string> lines;
+#ifdef _WIN32
+    ULONG size = 16384;
+    const ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    std::vector<std::uint8_t> storage;
+    ULONG result = ERROR_BUFFER_OVERFLOW;
+    for (int attempt = 0; attempt != 3 && result == ERROR_BUFFER_OVERFLOW; ++attempt) {
+        storage.resize(size);
+        result = GetAdaptersAddresses(AF_UNSPEC, flags, nullptr,
+            reinterpret_cast<IP_ADAPTER_ADDRESSES*>(storage.data()), &size);
+    }
+    if (result != NO_ERROR && result != ERROR_NO_DATA) return fail(result == ERROR_NOT_ENOUGH_MEMORY ? NET_ENOBUFS : 5);
+    if (result == NO_ERROR) {
+        const auto* first = reinterpret_cast<const IP_ADAPTER_ADDRESSES*>(storage.data());
+        for (auto* adapter = first; adapter; adapter = adapter->Next) {
+            for (auto* item = adapter->FirstUnicastAddress; item; item = item->Next) {
+                const auto* address = item->Address.lpSockaddr;
+                if (!address || (address->sa_family != AF_INET && address->sa_family != AF_INET6)) continue;
+                lines.push_back(InterfaceLine(adapter->AdapterName ? adapter->AdapterName : "?",
+                    adapter->OperStatus == IfOperStatusUp, adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK,
+                    address, item->OnLinkPrefixLength));
+            }
+        }
+    }
+#else
+    ifaddrs* addresses = nullptr;
+    if (::getifaddrs(&addresses) != 0) return fail(native_error());
+    const std::unique_ptr<ifaddrs, decltype(&freeifaddrs)> owner(addresses, &freeifaddrs);
+    for (auto* item = addresses; item; item = item->ifa_next) {
+        const auto* address = item->ifa_addr;
+        if (!address || (address->sa_family != AF_INET && address->sa_family != AF_INET6)) continue;
+        unsigned prefix = 0;
+        if (item->ifa_netmask) {
+            if (address->sa_family == AF_INET) {
+                prefix = std::popcount(reinterpret_cast<const sockaddr_in*>(item->ifa_netmask)->sin_addr.s_addr);
+            } else {
+                const auto& mask = reinterpret_cast<const sockaddr_in6*>(item->ifa_netmask)->sin6_addr;
+                for (const auto byte : mask.s6_addr) prefix += std::popcount(static_cast<unsigned>(byte));
+            }
+        }
+        lines.push_back(InterfaceLine(item->ifa_name, (item->ifa_flags & IFF_UP) != 0,
+            (item->ifa_flags & IFF_LOOPBACK) != 0, address, prefix));
+    }
+#endif
+    std::sort(lines.begin(), lines.end());
+    text = "sceNet ifconfig: addresses=" + std::to_string(lines.size()) + "\n";
+    for (const auto& line : lines) text += line;
+    return 0;
 }
 
 }  // namespace
@@ -472,8 +579,21 @@ int* APS5_VABI sceNetErrnoLoc(void) {
 }
 
 int APS5_VABI sceNetShowNetstat(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    std::vector<std::pair<int, Sock>> sockets;
+    {
+        std::lock_guard lock(g_mutex);
+        sockets.reserve(g_socks.size());
+        for (const auto& socket : g_socks) sockets.push_back(socket);
+    }
+    std::sort(sockets.begin(), sockets.end(), [](const auto& left, const auto& right) { return left.first < right.first; });
+    std::string text = "sceNet netstat: sockets=" + std::to_string(sockets.size()) + "\n";
+    for (const auto& [id, socket] : sockets) {
+        text += "socket=" + std::to_string(id) + " family=" + std::to_string(socket.family) +
+            " type=" + std::to_string(socket.type) + " nonblock=" + std::to_string(socket.nonblock) +
+            " bound=" + std::to_string(socket.bound) + " listening=" + std::to_string(socket.listening) +
+            " local=" + SocketEndpoint(socket.native->value, false) + " peer=" + SocketEndpoint(socket.native->value, true) + "\n";
+    }
+    return PrintDiagnostic(text);
 }
 
 int PollSockets(KernelSocketPoll::Entry* entries, int count, int timeoutMilliseconds) {
@@ -941,6 +1061,7 @@ int APS5_VABI sceNetSetsockopt(int s, int level, int optname, const void* optval
         socket = it->second;
     }
     if (level != NET_SOL_SOCKET) return fail(NET_EOPNOTSUPP);
+    optname = timeout_option(optname);
     if (!optval || optlen < sizeof(int)) return fail(NET_EINVAL);
     int value = 0;
     std::memcpy(&value, optval, sizeof(value));
@@ -986,7 +1107,7 @@ int APS5_VABI sceNetGetsockopt(int s, int level, int optname, void* optval, uint
     }
     if (level != NET_SOL_SOCKET) return fail(NET_EOPNOTSUPP);
     int value = 0;
-    switch (optname) {
+    switch (timeout_option(optname)) {
         case NET_SO_NBIO: value = socket.nonblock ? 1 : 0; break;
         case NET_SO_RCVTIMEO: value = socket.rcv_timeout_us; break;
         case NET_SO_SNDTIMEO: value = socket.snd_timeout_us; break;
@@ -1008,8 +1129,15 @@ int APS5_VABI sceNetGetsockname(int s, void* addr, uint32_t* addrlen) {
     if (!addr || !addrlen) return fail(NET_EINVAL);
     sockaddr_storage native{};
     NativeLength native_length = sizeof(native);
-    if (::getsockname(socket.native->value, reinterpret_cast<sockaddr*>(&native), &native_length) != 0)
+    if (::getsockname(socket.native->value, reinterpret_cast<sockaddr*>(&native), &native_length) != 0) {
+#ifdef _WIN32
+        if (WSAGetLastError() != WSAEINVAL) return fail(native_error());
+        native = {};
+        native.ss_family = socket.family == NET_AF_INET ? AF_INET : AF_INET6;
+#else
         return fail(native_error());
+#endif
+    }
     return native_to_guest_address(native, addr, addrlen) ? 0 : fail(NET_EAFNOSUPPORT);
 }
 
@@ -1121,7 +1249,7 @@ int APS5_VABI sceNetEpollWait(int eid, NetEpollEvent* events, int maxevents, int
                 for (const auto& entry : registration->second) {
                     const auto socket = g_socks.find(entry.first);
                     if (socket == g_socks.end()) continue;
-                    registered_events.push_back(entry.second);
+                    registered_events.push_back({entry.second.events, 0, static_cast<std::uint64_t>(entry.first), entry.second.data});
                     native_sockets.push_back(socket->second.native);
                 }
             }
@@ -1142,14 +1270,14 @@ int APS5_VABI sceNetEpollWait(int eid, NetEpollEvent* events, int maxevents, int
         for (std::size_t index = 0; index < descriptors.size(); ++index) {
             descriptors[index].fd = native_sockets[index]->value;
             if (registered_events[index].events & 1) descriptors[index].events |= POLLRDNORM;
-            if (registered_events[index].events & 4) descriptors[index].events |= POLLWRNORM;
+            if (registered_events[index].events & 2) descriptors[index].events |= POLLWRNORM;
         }
 #else
         std::vector<pollfd> descriptors(registered_events.size());
         for (std::size_t index = 0; index < descriptors.size(); ++index) {
             descriptors[index].fd = native_sockets[index]->value;
             if (registered_events[index].events & 1) descriptors[index].events |= POLLIN;
-            if (registered_events[index].events & 4) descriptors[index].events |= POLLOUT;
+            if (registered_events[index].events & 2) descriptors[index].events |= POLLOUT;
         }
 #endif
         const auto now = std::chrono::steady_clock::now();
@@ -1179,10 +1307,10 @@ int APS5_VABI sceNetEpollWait(int eid, NetEpollEvent* events, int maxevents, int
                 std::uint32_t guest_events = 0;
 #ifdef _WIN32
                 if (native_events & (POLLRDNORM | POLLPRI)) guest_events |= 1;
-                if (native_events & POLLWRNORM) guest_events |= 4;
+                if (native_events & POLLWRNORM) guest_events |= 2;
 #else
                 if (native_events & (POLLIN | POLLPRI)) guest_events |= 1;
-                if (native_events & POLLOUT) guest_events |= 4;
+                if (native_events & POLLOUT) guest_events |= 2;
 #endif
                 if (native_events & POLLERR) guest_events |= 8;
                 if (native_events & POLLHUP) guest_events |= 16;
@@ -1408,8 +1536,9 @@ int APS5_VABI sceNetResolverAbort(int rid, int flags) {
 }
 
 int APS5_VABI sceNetShowIfconfig() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    std::string text;
+    if (const int error = InterfaceReport(text)) return error;
+    return PrintDiagnostic(text);
 }
 
 extern const std::uint8_t in6addr_any_nid_postfix[16] = {};
