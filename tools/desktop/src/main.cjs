@@ -15,6 +15,8 @@ app.setName('AnyPS5 Desktop');
 const portableData = path.join(path.dirname(app.getPath('exe')), 'portable-data');
 const dataDirectory = process.env.ANYPS5_DESKTOP_TEST_DATA || process.env.ANYPS5_DESKTOP_DATA || (app.isPackaged && require('node:fs').existsSync(portableData) ? portableData : null);
 if (dataDirectory) app.setPath('userData', dataDirectory);
+const { createLoadingOverlay } = require('./loading-overlay.cjs');
+const loadingOverlays = new Set();
 const runningGames = new Set();
 let window;
 let activeJob;
@@ -199,20 +201,26 @@ function registerHandlers() {
     if (runningGames.has(executable)) throw new Error('This game is already running. Close it before changing resolution or launching it again.');
     runningGames.add(executable);
     let started = false;
+    let loading;
     try {
       const settings = (await loadState()).settings;
       const input = await prepareInput(executable, app.getPath('userData'), settings.input);
       const graphics = await prepareGraphics(executable, settings.graphics);
+      loading = await createLoadingOverlay(app.getPath('userData'));
+      loadingOverlays.add(loading);
       await new Promise((resolve, reject) => {
-        const child = spawn(executable, [], { cwd: game.directory, env: input.env, detached: true, stdio: 'ignore', shell: false });
+        const child = spawn(executable, [], { cwd: game.directory, env: { ...input.env, ANYPS5_LOADING_STATUS: loading.statusPath }, detached: true, stdio: 'ignore', shell: false });
         child.once('error', reject);
-        child.once('exit', () => runningGames.delete(executable));
+        child.once('exit', () => { runningGames.delete(executable); loadingOverlays.delete(loading); loading.stop().catch(() => {}); });
         child.once('spawn', () => { started = true; child.unref(); resolve(); });
       });
       await updateState(state => { state.games.find(g => g.id === id).lastPlayed = new Date().toISOString(); });
       return { inputSource: input.source, inputConfig: input.configPath, graphics };
     } finally {
-      if (!started) runningGames.delete(executable);
+      if (!started) {
+        runningGames.delete(executable);
+        if (loading) { loadingOverlays.delete(loading); await loading.stop(); }
+      }
     }
   });
   handle('game:folder', async id => {
@@ -272,7 +280,11 @@ async function createWindow() {
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.on('close', event => {
-    if (!activeJob) return;
+    if (!activeJob) {
+      for (const loading of loadingOverlays) loading.stop(false).catch(() => {});
+      loadingOverlays.clear();
+      return;
+    }
     event.preventDefault();
     dialog.showMessageBox(window, { type: 'question', title: 'Operation in progress', message: 'Stop the current operation and close the app?', detail: 'Wait for temporary files and ISO mounts to be released. Your source files will remain unchanged.', buttons: ['Continue', 'Stop and close'], defaultId: 0, cancelId: 0 }).then(({ response }) => { if (response === 1) { closeAfterJob = true; activeJob?.abort(); if (!activeJob) window.close(); } });
   });

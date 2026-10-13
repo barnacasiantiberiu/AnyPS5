@@ -44,6 +44,8 @@ Per-game progress (stage reached, open blockers, libraries and GPU coverage) is 
 
 The [Desktop launcher](docs/user/DESKTOP.md) provides saved resolution presets under Settings > Graphics. Supported Unity startup configurations are updated reversibly at launch; other titles retain their original resolution. A Windows runtime trace confirms 1920x1080 video output for Valheim with the 1080p preset. This is not universal internal render scaling or a confirmed FPS fix. Export coverage is unchanged.
 
+The Desktop loading overlay reports real shader/pipeline work during presentation pauses, with completed step counts and explicit no-progress/stale-status messages. It hides when frames resume or the game loses focus. No total or completion time is assumed. See [Desktop loading status](docs/user/DESKTOP.md#loading-overlay) for supported window systems and verification. This does not resolve the remaining Valheim stall or GPU performance issue. Export coverage is unchanged.
+
 ## Input mapping
 
 SDL-mapped game controllers are supported, including analog sticks and triggers. Keyboard and mouse controls can be configured with an `anyps5-input.ini` file. See [input mapping](docs/user/INPUT_MAPPING.md) for the supported devices and configuration format.

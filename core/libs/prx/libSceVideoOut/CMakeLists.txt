@@ -5,6 +5,7 @@ add_library(libSceVideoOut SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Output.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoOutDriver.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/DisplayWindow.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/LoadingWindow.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PadInput.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/MouseInput.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/KeyboardInput.cpp
@@ -152,5 +153,26 @@ if(BUILD_TESTING)
     if(WIN32)
         set_tests_properties(guest_buffer_reuse PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+endif()
+
+if(BUILD_TESTING)
+    add_test_executable(loading_window_tests tests/LoadingWindow.cpp src/LoadingWindow.cpp)
+    target_include_directories(loading_window_tests PRIVATE ${LIBS_INCLUDE_DIR} ${ANYPS5_SDL2_INCLUDE_DIR})
+    target_link_libraries(loading_window_tests PRIVATE SDL2-static libc)
+    configure_windows_unwind(loading_window_tests)
+    add_test(NAME loading_window COMMAND loading_window_tests)
+    set_tests_properties(loading_window PROPERTIES TIMEOUT 10 LABELS "module-functional;module:libSceVideoOut")
+    if(WIN32)
+        set_tests_properties(loading_window PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    else()
+        set_tests_properties(loading_window PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=x11")
+    endif()
+endif()
+
+if(NOT ANYPS5_USE_SYSTEM_DEPS)
+    target_include_directories(libSceVideoOut BEFORE PRIVATE $<TARGET_PROPERTY:SDL2-static,INTERFACE_INCLUDE_DIRECTORIES>)
+    if(BUILD_TESTING)
+        target_include_directories(loading_window_tests BEFORE PRIVATE $<TARGET_PROPERTY:SDL2-static,INTERFACE_INCLUDE_DIRECTORIES>)
     endif()
 endif()

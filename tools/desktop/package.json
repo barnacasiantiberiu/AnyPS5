@@ -1,6 +1,6 @@
 {
   "name": "anyps5-desktop",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Desktop game library and conversion assistant for AnyPS5",
   "main": "src/main.cjs",
   "private": true,
@@ -21,7 +21,9 @@
     "test:iso-close": "node tests/iso-close.cjs",
     "test:controller": "node tests/controller-ui.cjs",
     "test:graphics": "node --test tests/graphics-settings.test.cjs",
-    "test:graphics-ui": "node tests/graphics-ui.cjs"
+    "test:graphics-ui": "node tests/graphics-ui.cjs",
+    "test:loading": "node --test tests/loading-model.test.cjs",
+    "test:loading-ui": "node tests/loading-ui.cjs"
   },
   "devDependencies": {
     "@electron/packager": "20.3.0",
