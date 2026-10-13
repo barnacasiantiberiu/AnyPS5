@@ -1,0 +1,84 @@
+name: Shader optimization regressions
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'core/shader/recompiler/**'
+      - 'core/libs/prx/libSceAgcDriver/**'
+      - '.github/workflows/shader-optimizations.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shader-optimizations-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  value-proofs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build independent proof tests
+        run: |
+          cmake -S core/shader/recompiler/tests/denormal_proofs -B build-proofs -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.compiler }}
+          cmake --build build-proofs --parallel 2
+      - name: Check proofs, masks and deep graphs
+        run: ctest --test-dir build-proofs --no-tests=error --output-on-failure
+
+  shader-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
+      CTEST_PARALLEL_LEVEL: 1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Install Linux prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++-14 ninja-build mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev libxrandr-dev libx11-dev libxext-dev
+      - name: Configure with SPIR-V validation and optimization
+        run: |
+          cmake -S . -B build-shader-safe -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 -DANYPS5_ENABLE_SPIRV_TOOLS=ON -DANYPS5_VIDEO_OUT_TEST_DRIVER=offscreen
+      - name: Build production IR and rendering regressions
+        run: cmake --build build-shader-safe --target agc_denormal_flush_elimination_tests agc_driver_pixel_barycentric_emulation_tests agc_driver_tessellation_tests
+      - name: Validate default and balanced profiles
+        env:
+          ANYPS5_REQUIRE_VULKAN: '1'
+        run: |
+          set -eu
+          for icd in /usr/share/vulkan/icd.d/lvp_icd*.json; do
+            if [ -f "$icd" ]; then export VK_ICD_FILENAMES="$icd"; break; fi
+          done
+          test -n "${VK_ICD_FILENAMES:-}"
+          unset APS5_SPIRV_OPT
+          export ANYPS5_SHADER_CACHE_DIR="$RUNNER_TEMP/shader-safe-default"
+          ctest --test-dir build-shader-safe -R '^agc_(denormal_flush_elimination|driver_pixel_barycentric_emulation|driver_tessellation)$' --no-tests=error --output-on-failure --output-junit shader-default.xml
+          export APS5_SPIRV_OPT=balanced
+          export ANYPS5_SHADER_CACHE_DIR="$RUNNER_TEMP/shader-safe-balanced"
+          ctest --test-dir build-shader-safe -R '^agc_(denormal_flush_elimination|driver_pixel_barycentric_emulation|driver_tessellation)$' --no-tests=error --output-on-failure --output-junit shader-balanced.xml
+      - name: Upload integration evidence
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: shader-optimization-evidence
+          path: |
+            build-shader-safe/shader-default.xml
+            build-shader-safe/shader-balanced.xml
+            build-shader-safe/Testing/Temporary/
+            build-shader-safe/CMakeCache.txt
+            build-shader-safe/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn

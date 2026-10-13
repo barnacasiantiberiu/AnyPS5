@@ -101,6 +101,7 @@ std::vector<std::uint32_t> ValidateAndOptimizeSpirv(std::span<const std::uint32_
     // APS5_SPIRV_OPT=full restores the SPIRV-Tools performance pipeline, =none skips optimization.
     const bool allowFolding = !HasLimitedUseTypes(spirv);
     const bool full = mode != nullptr && std::string(mode) == "full";
+    const bool balanced = mode != nullptr && std::string(mode) == "balanced";
     if (full && allowFolding) {
         optimizer.RegisterPerformancePasses(true);
     } else {
@@ -143,6 +144,12 @@ std::vector<std::uint32_t> ValidateAndOptimizeSpirv(std::span<const std::uint32_
                 .RegisterPass(spvtools::CreateDeadBranchElimPass())
                 .RegisterPass(spvtools::CreateIfConversionPass())
                 .RegisterPass(spvtools::CreateCopyPropagateArraysPass())
+                .RegisterPass(spvtools::CreateReduceLoadSizePass());
+        }
+        if (balanced && allowFolding) {
+            optimizer.RegisterPass(spvtools::CreateSSARewritePass())
+                .RegisterPass(spvtools::CreateVectorDCEPass())
+                .RegisterPass(spvtools::CreateDeadInsertElimPass())
                 .RegisterPass(spvtools::CreateReduceLoadSizePass());
         }
         optimizer.RegisterPass(spvtools::CreateAggressiveDCEPass(true))

@@ -85,12 +85,19 @@ public:
         const auto zero = constant(floatType, 0u);
         const auto one = constant(floatType, std::bit_cast<std::uint32_t>(1.0f));
         std::array<std::array<std::uint32_t, 3>, ParameterLocations> values {};
-        for (const auto location : sources) {
+        for (const auto& parameter : perVertex) {
+            const auto location = parameter.sourceLocation;
+            if (values[location][0] != 0u) continue;
             for (std::uint32_t vertex = 0; vertex < 3u; ++vertex) values[location][vertex] = load(vec4FloatType, result(spv::OpAccessChain, ptrInputVec4, inputs[location], constant(intType, vertex)));
         }
         for (std::uint32_t vertex = 0; vertex < 3u; ++vertex) {
             store(position, load(vec4FloatType, result(spv::OpAccessChain, ptrInputVec4, glIn, constant(intType, vertex), constant(intType, 0u))));
-            for (std::size_t i = 0; i < passed.size(); ++i) store(passedOutputs[i], values[passed[i]][vertex]);
+            for (std::size_t i = 0; i < passed.size(); ++i) {
+                const auto location = passed[i];
+                const auto value = values[location][vertex] != 0u ? values[location][vertex] :
+                    load(vec4FloatType, result(spv::OpAccessChain, ptrInputVec4, inputs[location], constant(intType, vertex)));
+                store(passedOutputs[i], value);
+            }
             const auto weights = result(spv::OpCompositeConstruct, vec3FloatType, vertex == 0u ? one : zero, vertex == 1u ? one : zero, vertex == 2u ? one : zero);
             if (smooth != 0u) store(smooth, weights);
             if (linear != 0u) store(linear, weights);
