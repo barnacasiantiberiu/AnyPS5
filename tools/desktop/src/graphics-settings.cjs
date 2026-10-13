@@ -11,21 +11,13 @@ const resolutions = [
   { value: '3840x2160', label: '3840 x 2160 (4K)', width: 3840, height: 2160 }
 ];
 const widthKeys = ['platform-ps5-video-out-width', 'platform-ps5-standardmode-video-out-width'];
-const defaultGraphics = () => ({ resolution: '1920x1080' });
+const defaultGraphics = () => ({ resolution: 'native' });
 
 function validateGraphics(value = defaultGraphics()) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || !resolutions.some(item => item.value === value.resolution)) {
     throw new Error('Choose a resolution from the Graphics list.');
   }
-  return { resolution: value.resolution };
-}
-function rewriteBootConfig(text, width) {
-  let found = false;
-  const rewritten = text.replace(/^(\uFEFF?platform-ps5-(?:standardmode-)?video-out-width)=(\d+)(\r?)$/gm, (line, key, previous, end) => {
-    found = true;
-    return key + '=' + width + end;
-  });
-  return found ? rewritten : null;
+  return { resolution: 'native' };
 }
 async function optionalRead(file) {
   try {
@@ -48,7 +40,6 @@ async function writeAtomic(file, text) {
 }
 async function prepareGraphics(executable, value) {
   const settings = validateGraphics(value);
-  const selected = resolutions.find(item => item.value === settings.resolution);
   const directory = path.dirname(executable);
   for (const relative of ['app0/Media/boot.config', 'app0/boot.config']) {
     const file = path.join(directory, relative);
@@ -66,11 +57,9 @@ async function prepareGraphics(executable, value) {
         throw new Error('The game boot configuration changed outside AnyPS5 Desktop. Your changes were preserved; review ' + backupFile + ' before changing resolution.');
       }
     } else {
-      if (settings.resolution === 'native') return { source: 'native', message: 'Using the original game resolution.' };
-      backup = { version: 1, original: current, lastApplied: current, previousApplied: current };
+      return { source: 'native', message: 'Using the original game resolution.' };
     }
-    const next = settings.resolution === 'native' ? backup.original : rewriteBootConfig(backup.original, selected.width);
-    if (next === null) throw new Error('The saved game configuration has no supported resolution setting.');
+    const next = backup.original;
     if (next !== current) {
       await writeAtomic(backupFile, JSON.stringify({ ...backup, previousApplied: current, lastApplied: next }, null, 2) + '\n');
       await writeAtomic(file, next);
@@ -78,12 +67,12 @@ async function prepareGraphics(executable, value) {
     return {
       source: 'unity',
       resolution: settings.resolution,
-      message: settings.resolution === 'native' ? 'Original game resolution restored.' : 'Requested ' + selected.label + '. The game may adjust its internal rendering resolution.'
+      message: 'Original game resolution restored.'
     };
   }
   return {
     source: 'native',
-    message: settings.resolution === 'native' ? 'Using the original game resolution.' : 'This game has no supported resolution configuration. Its original resolution is unchanged.'
+    message: 'Using the original game resolution.'
   };
 }
-module.exports = { resolutions, defaultGraphics, validateGraphics, rewriteBootConfig, prepareGraphics };
+module.exports = { resolutions, defaultGraphics, validateGraphics, prepareGraphics };

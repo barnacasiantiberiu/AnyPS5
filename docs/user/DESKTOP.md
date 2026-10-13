@@ -1,6 +1,6 @@
 # AnyPS5 Desktop
 
-The launcher source is tracked under tools/desktop so releases can be rebuilt. Version 0.5.0 adds Settings > Graphics with original resolution, 720p, 900p, 1080p (default), 1440p and 4K.
+The launcher source is tracked under tools/desktop so releases can be rebuilt. Version 0.5.2 restores original game resolution and disables the unsafe output-width presets in Settings > Graphics.
 
 ## Build on Windows
 
@@ -10,9 +10,9 @@ For portable data, create portable-data beside the packaged executable before op
 
 ## Resolution
 
-The selected preset is saved with the launcher settings and applied at launch to supported Unity PS5 app0/Media/boot.config or app0/boot.config width settings. The original converted-game configuration is retained in an adjacent .anyps5-resolution.json recovery file. Selecting original resolution restores it at the next launch. Other games are launched unchanged with an explicit message; no general render-target scaling or detail presets are implemented. A title may override its internal rendering size, so a requested resolution is not a measured rendering size.
+Original game resolution is the only enabled option. Previously saved 720p, 900p, 1080p, 1440p and 4K selections migrate to original resolution. Output-width overrides caused corrupted Valheim rendering because they did not resize the internal render targets, depth buffers and dependent passes together. No universal internal render scaling or detail presets are implemented. Use a game's own graphics settings where available.
 
-Do not change graphics settings for a game still running outside this launcher. Changes also affect direct launches of that converted installation until original resolution is restored. The unconverted source files are not changed. Unexpected edits to a managed configuration are preserved and reported rather than overwritten.
+On the next launch, an existing .anyps5-resolution.json recovery file restores the exact original bytes of the managed Unity boot.config. Configurations without a recovery file are left unchanged. Unexpected external edits are preserved and reported rather than overwritten. Do not launch the same installation with another launcher while restoring its configuration.
 
 ## Focused verification
 

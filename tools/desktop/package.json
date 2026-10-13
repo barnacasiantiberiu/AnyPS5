@@ -1,6 +1,6 @@
 {
   "name": "anyps5-desktop",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Desktop game library and conversion assistant for AnyPS5",
   "main": "src/main.cjs",
   "private": true,
