@@ -498,6 +498,18 @@ int APS5_VABI sceNgs2GeomResetSourceParam(Ngs2GeomSourceParam* out_source_param)
     return Ngs2GeomResetSourceParam(out_source_param);
 }
 
+int APS5_VABI sceNgs2GeomApply(const Ngs2GeomListenerWork* listener, const Ngs2GeomSourceParam* source, Ngs2GeomAttribute* output, std::uint32_t flags) {
+    return Ngs2GeomApply(listener, source, output, flags);
+}
+
+int APS5_VABI sceNgs2ReportRegisterHandler(std::uint32_t reportType, Ngs2ReportHandler handler, std::uintptr_t userData, Ngs2Handle* outHandle) {
+    return Ngs2ReportRegisterHandler(reportType, handler, userData, outHandle);
+}
+
+int APS5_VABI sceNgs2ReportUnregisterHandler(Ngs2Handle reportHandle) {
+    return Ngs2ReportUnregisterHandler(reportHandle);
+}
+
 }
 
 #pragma GCC visibility pop

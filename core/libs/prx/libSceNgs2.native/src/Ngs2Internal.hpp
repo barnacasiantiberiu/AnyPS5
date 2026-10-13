@@ -171,6 +171,7 @@ struct Ngs2System {
 std::string Ngs2Hex(std::uint32_t value);
 const std::uint8_t* Ngs2StreamEnd(const Ngs2Voice& voice, const Ngs2Block& block);
 std::recursive_mutex& Ngs2Mutex();
+void Ngs2ReportCpuLoad(Ngs2Handle system, double ratio);
 Ngs2System* Ngs2FindSystem(Ngs2Handle handle);
 
 template <typename TParam>
@@ -206,5 +207,9 @@ int Ngs2PanGetVolumeMatrix(Ngs2PanWork* work, const Ngs2PanParam* params, uint32
 int Ngs2GeomResetListenerParam(Ngs2GeomListenerParam* out_listener_param);
 int Ngs2GeomCalcListener(const Ngs2GeomListenerParam* param, Ngs2GeomListenerWork* outWork, std::uint32_t flags);
 int Ngs2GeomResetSourceParam(Ngs2GeomSourceParam* out_source_param);
+
+int Ngs2GeomApply(const Ngs2GeomListenerWork* listener, const Ngs2GeomSourceParam* source, Ngs2GeomAttribute* output, std::uint32_t flags);
+int Ngs2ReportRegisterHandler(std::uint32_t reportType, Ngs2ReportHandler handler, std::uintptr_t userData, Ngs2Handle* outHandle);
+int Ngs2ReportUnregisterHandler(Ngs2Handle reportHandle);
 
 #endif

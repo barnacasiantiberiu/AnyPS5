@@ -74,6 +74,25 @@ static constexpr std::uint32_t SCE_NGS2_VOICE_CALLBACK_FLAG_BLOCK_REPEAT = 2;
 
 using Ngs2Handle = std::uintptr_t;
 
+static constexpr std::uint32_t SCE_NGS2_REPORT_CPU_LOAD = 5;
+struct Ngs2ReportDataHeader {
+    std::size_t size;
+    Ngs2Handle handle;
+    std::uint32_t type;
+    std::int32_t result;
+};
+struct Ngs2ReportCpuLoadData {
+    Ngs2ReportDataHeader header;
+    float total_ratio;
+    float flush_ratio;
+    float process_ratio;
+    float feedback_ratio;
+};
+using Ngs2ReportHandler = void (APS5_VABI *)(const Ngs2ReportDataHeader*, std::uintptr_t);
+static_assert(sizeof(Ngs2ReportDataHeader) == 24);
+static_assert(sizeof(Ngs2ReportCpuLoadData) == 40);
+
+
 struct Ngs2ContextBufferInfo {
     void* host_buffer;
     std::size_t host_buffer_size;
