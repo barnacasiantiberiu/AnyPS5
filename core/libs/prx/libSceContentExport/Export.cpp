@@ -1,4 +1,5 @@
 #include "SceTypes.hpp"
+#include "HostContent.hpp"
 #include "prx/libc/include/General.hpp"
 #include <algorithm>
 #include <atomic>
@@ -193,7 +194,8 @@ int Export(Operation& operation, const ContentExportParam* param, const Source& 
     if (thumbnail) Copy(*thumbnail, temporary / ("thumbnail" + thumbnailExtension), buffer, operation, total, transferred);
     std::ofstream metadata(temporary / "metadata.json", std::ios::binary);
     metadata << "{\"title\":" << Json(title) << ",\"comment\":" << Json(comment) << ",\"contentType\":" << Json(type)
-             << ",\"thumbnailType\":" << Json(thumbnailType) << "}\n";
+             << ",\"thumbnailType\":" << Json(thumbnailType)
+             << ",\"contentId\":\"" << HostContent::Id_nid_no_patch(directory) << "\"}\n";
     metadata.close();
     if (!metadata) throw std::runtime_error("Content export metadata write failed");
     {
