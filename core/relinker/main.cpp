@@ -59,7 +59,7 @@ int Run(const int argc, char* argv[]) {
         Io::FileReader fileReader;
         Io::FileWriter fileWriter;
 
-        auto sourceBytes = fileReader.Read(args.inputPath);
+        auto sourceBytes = Relinker::ElfReader::DecodeExecutable(fileReader.Read(args.inputPath));
         if (std::filesystem::exists(Io::NativePath(args.outputPath)) && std::filesystem::equivalent(Io::NativePath(args.inputPath), Io::NativePath(args.outputPath)))
             throw Domain::RelinkerException("Executable output would overwrite the input executable");
         const std::string absPath = Io::Utf8Path(std::filesystem::absolute(Io::NativePath(args.outputPath)));

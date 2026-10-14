@@ -6,7 +6,7 @@ const os = require('node:os');
 const { withMountedIso, inspectIso, resolveIsoRequest, checkIsoEntry } = require('../src/iso-source.cjs');
 
 const ELF = Buffer.from([127, 69, 76, 70, 2, 1, 1, 9]);
-const SELF = Buffer.from([0x54, 0x14, 0xf5, 0xee, 0, 1, 1, 0x12]);
+const SELF = require('./fixtures/self.cjs').selfExecutable();
 const deferred = () => {
   let resolve;
   const promise = new Promise(done => { resolve = done; });

@@ -1,11 +1,11 @@
 {
   "name": "anyps5-desktop",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Desktop game library and conversion assistant for AnyPS5",
   "main": "src/main.cjs",
   "private": true,
   "scripts": {
-    "start": "electron .",
+    "start": "node scripts/launch.cjs",
     "test": "node --test tests/installer.test.cjs tests/source-layout.test.cjs tests/player-settings.test.cjs tests/iso-source.test.cjs tests/input-profile.test.cjs tests/controller-navigation.test.cjs",
     "test:ui": "node tests/desktop.cjs",
     "package": "electron-packager . \"AnyPS5 Desktop\" --platform=win32 --arch=x64 --out=dist --overwrite --asar --ignore=^/tests --ignore=^/artifacts --ignore=^/dist",
@@ -22,8 +22,10 @@
     "test:controller": "node tests/controller-ui.cjs",
     "test:graphics": "node --test tests/graphics-settings.test.cjs",
     "test:graphics-ui": "node tests/graphics-ui.cjs",
-    "test:loading": "node --test tests/loading-model.test.cjs",
-    "test:loading-ui": "node tests/loading-ui.cjs"
+    "test:loading": "node --test tests/loading-model.test.cjs tests/loading-history.test.cjs",
+    "test:loading-ui": "node tests/loading-ui.cjs",
+    "test:self": "node --test tests/installer.test.cjs tests/source-layout.test.cjs tests/iso-source.test.cjs",
+    "test:self-ui": "node tests/self-input-ui.cjs"
   },
   "devDependencies": {
     "@electron/packager": "20.3.0",

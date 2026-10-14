@@ -9,6 +9,7 @@ namespace Relinker {
 class ElfReader : public IElfReader {
 public:
     explicit ElfReader(std::vector<std::uint8_t> fileBuffer);
+    static std::vector<std::uint8_t> DecodeExecutable(std::vector<std::uint8_t> bytes);
 
     ElfHeader ReadHeader() const override;
     std::vector<ProgramHeader> ReadProgramHeaders() const override;

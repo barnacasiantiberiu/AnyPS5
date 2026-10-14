@@ -1,0 +1,32 @@
+function selfExecutable({ encrypted = true, compressed = false, ps5 = true } = {}) {
+  const bytes = Buffer.alloc(0x180);
+  bytes.writeUInt32LE(ps5 ? 0xeef51454 : 0x1d3d154f, 0);
+  bytes[5] = 1; bytes[6] = 1; bytes[7] = 0x12;
+  bytes.writeUInt16LE(0x100, 12);
+  bytes.writeUInt16LE(0x40, 14);
+  bytes.writeBigUInt64LE(BigInt(bytes.length), 16);
+  bytes.writeUInt16LE(2, 24);
+  bytes.writeBigUInt64LE(0x110004n, 32);
+  bytes.writeBigUInt64LE(0x140n, 40);
+  bytes.writeBigUInt64LE(32n, 48);
+  bytes.writeBigUInt64LE(32n, 56);
+  bytes.writeBigUInt64LE(0x2804n | (encrypted ? 2n : 0n) | (compressed ? 8n : 0n), 64);
+  bytes.writeBigUInt64LE(0x160n, 72);
+  bytes.writeBigUInt64LE(32n, 80);
+  bytes.writeBigUInt64LE(32n, 88);
+  Buffer.from([127, 69, 76, 70, 2, 1, 1, 9]).copy(bytes, 96);
+  bytes.writeUInt16LE(3, 96 + 16);
+  bytes.writeUInt16LE(62, 96 + 18);
+  bytes.writeUInt32LE(1, 96 + 20);
+  bytes.writeBigUInt64LE(64n, 96 + 32);
+  bytes.writeUInt16LE(64, 96 + 52);
+  bytes.writeUInt16LE(56, 96 + 54);
+  bytes.writeUInt16LE(1, 96 + 56);
+  bytes.writeUInt32LE(1, 160);
+  bytes.writeBigUInt64LE(0x240n, 168);
+  bytes.writeBigUInt64LE(32n, 192);
+  bytes.writeBigUInt64LE(64n, 200);
+  bytes.fill(0x90, 0x160);
+  return bytes;
+}
+module.exports = { selfExecutable };

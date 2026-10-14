@@ -1,7 +1,7 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; background: transparent; overflow: hidden; color: #edf3ff; font-family: "Segoe UI", system-ui, sans-serif; }
 body { padding: 6px; }
-main { padding: 18px 20px 16px; height: 194px; border: 1px solid #64799a66; border-radius: 18px; background: linear-gradient(125deg, #162333f5, #0b111ef5 65%); box-shadow: 0 8px 24px #0005; }
+main { padding: 18px 20px 16px; height: 234px; border: 1px solid #64799a66; border-radius: 18px; background: linear-gradient(125deg, #162333f5, #0b111ef5 65%); box-shadow: 0 8px 24px #0005; }
 header, .heading, footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 header { margin-bottom: 14px; }
 .brand { font-size: 11px; font-weight: 750; letter-spacing: 2px; }
@@ -21,3 +21,6 @@ body.warning .track { background: #574a3866; }
 @keyframes travel { from { transform: translateX(-100%); } to { transform: translateX(410%); } }
 @media (prefers-reduced-motion: reduce) { body.active .track div { animation: none; width: 100%; opacity: .5; } }
 @media (max-width: 380px) { #note { display: none; } main { padding: 18px 14px; } h1 { font-size: 15px; } }
+
+.timing { display: grid; gap: 4px; margin-top: 10px; color: #9baec7; font-size: 10px; font-variant-numeric: tabular-nums; }
+#previous { color: #7e92ad; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

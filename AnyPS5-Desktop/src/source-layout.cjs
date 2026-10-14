@@ -1,8 +1,9 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { elfMagic, selfMagic, inspectExecutable } = require('./executable-format.cjs');
 
 const MODULE_DIRS = ['sce_module', 'sce_modules', 'prx'];
-const candidateName = name => /\.elf$/i.test(name) || /^(eboot\.bin|eboot)$/i.test(name);
+const candidateName = name => /\.(elf|self)$/i.test(name) || /^(eboot\.bin|eboot)$/i.test(name);
 const within = (parent, child) => {
   const relative = path.relative(path.resolve(parent), path.resolve(child));
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
@@ -12,8 +13,6 @@ async function magic(file) {
   try { const buffer = Buffer.alloc(4); await handle.read(buffer, 0, 4, 0); return buffer; }
   finally { await handle.close(); }
 }
-const elfMagic = header => header.equals(Buffer.from([127, 69, 76, 70]));
-const selfMagic = header => header.equals(Buffer.from([0x4f, 0x15, 0x3d, 0x1d])) || header.equals(Buffer.from([0x54, 0x14, 0xf5, 0xee]));
 const isElf = async file => elfMagic(await magic(file));
 const rootEntries = directory => fs.readdir(directory, { withFileTypes: true });
 const hasExecutable = entries => entries.some(e => e.isFile() && candidateName(e.name));
@@ -43,8 +42,7 @@ async function executableCandidates(directory) {
   entries.sort((a, b) => Number(!/^eboot/i.test(a.name)) - Number(!/^eboot/i.test(b.name)) || a.name.localeCompare(b.name));
   return Promise.all(entries.map(async entry => {
     const file = path.join(directory, entry.name);
-    const header = await magic(file);
-    return { file, elf: elfMagic(header), self: selfMagic(header) };
+    return { file, ...await inspectExecutable(file) };
   }));
 }
 async function inspectSource(folder) {
@@ -57,7 +55,7 @@ async function inspectSource(folder) {
   // Only recognize this layout when a replacement for a root executable is present.
   const usableOverlay = overlayCandidates.some(e => e.elf && candidates.some(c => path.basename(c.file).toLowerCase() === path.basename(e.file).toLowerCase()));
   const decryptedRoot = usableOverlay ? overlayRoot : '';
-  const executables = [...candidates, ...(usableOverlay ? overlayCandidates : [])].filter(e => e.elf).map(e => e.file)
+  const executables = [...(usableOverlay ? overlayCandidates : []), ...candidates].filter(e => e.supported).map(e => e.file)
     .sort((a, b) => Number(!/^eboot/i.test(path.basename(a))) - Number(!/^eboot/i.test(path.basename(b))));
   let title = path.basename(source);
   let titleId = '';
@@ -67,24 +65,21 @@ async function inspectSource(folder) {
     title = texts['en-US']?.titleName || texts['en-GB']?.titleName || Object.values(texts).find(v => v?.titleName)?.titleName || title;
     titleId = param.titleId || '';
   } catch {}
-  const encrypted = !executables.length && candidates.some(e => e.self);
-  const diagnostic = executables.length ? '' : encrypted
-    ? 'The game executable is a SELF file. Select a decrypted ELF executable; AnyPS5 cannot decrypt SELF files.'
-    : candidates.length ? 'The game executable is not a recognized ELF file. Select a valid decrypted ELF executable.'
-    : 'No executable was found. Choose the folder containing eboot.bin and the game modules, or select an ELF executable.';
+  const encrypted = !executables.length && candidates.some(e => e.encrypted);
+  const diagnostic = executables.length ? '' : candidates.length ? (candidates.find(e => e.encrypted) || candidates[0]).diagnostic
+    : 'No executable was found. Choose the folder containing eboot.bin and the game modules, or select an ELF or unencrypted SELF executable.';
   return { source, title, titleId, executables, entry: executables[0] || '', encrypted, decryptedRoot, diagnostic,
     note: decryptedRoot ? 'Using the decrypted executable and modules with the original game resources.' : '' };
 }
 async function checkEntry({ source, entry }) {
   const root = await fs.realpath(source);
   if (!(await fs.stat(root)).isDirectory()) throw new Error('Choose the game folder.');
-  if (typeof entry !== 'string' || !entry.trim()) throw new Error('Choose a decrypted ELF executable.');
+  if (typeof entry !== 'string' || !entry.trim()) throw new Error('Choose an ELF or unencrypted SELF executable.');
   const file = await fs.realpath(entry).catch(() => { throw new Error('The selected executable could not be found. Choose it again.'); });
   if (!within(root, file)) throw new Error('The selected executable is outside the game folder. Choose a file inside the selected game folder.');
   if (!(await fs.stat(file)).isFile()) throw new Error('Choose an executable file, not a folder.');
-  const header = await magic(file);
-  if (selfMagic(header)) throw new Error(`${path.relative(root, file)} is a SELF executable. Select its decrypted ELF counterpart; AnyPS5 cannot decrypt SELF files.`);
-  if (!elfMagic(header)) throw new Error(`${path.relative(root, file)} is not a recognized ELF executable. Choose a valid decrypted ELF file.`);
+  const format = await inspectExecutable(file);
+  if (!format.supported) throw new Error(`${path.relative(root, file)}: ${format.diagnostic}`);
   return file;
 }
-module.exports = { MODULE_DIRS, within, magic, elfMagic, selfMagic, isElf, inspectSource, checkEntry };
+module.exports = { MODULE_DIRS, within, magic, elfMagic, selfMagic, isElf, inspectExecutable, inspectSource, checkEntry };

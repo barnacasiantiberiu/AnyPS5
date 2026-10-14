@@ -4,7 +4,7 @@ const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 
 const DLLS = ['libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll'];
-const { MODULE_DIRS, within, magic, elfMagic, selfMagic, isElf, inspectSource, checkEntry } = require('./source-layout.cjs');
+const { MODULE_DIRS, within, magic, elfMagic, selfMagic, isElf, inspectExecutable, inspectSource, checkEntry } = require('./source-layout.cjs');
 const exists = async p => !!(await fs.lstat(p).catch(() => null));
 function checkAbort(signal) {
   if (signal?.aborted) throw new Error('Conversion was cancelled. Your source files remain unchanged.');
@@ -125,11 +125,15 @@ async function validate(request, signal) {
   const inputFiles = [];
   for (const file of effectiveFiles) {
     checkAbort(signal);
+    if (/\.esbak$/i.test(file.relative)) continue;
     const isEntry = file.relative.toLowerCase() === entryRelative.toLowerCase();
-    if (isEntry || /\.(prx|sprx|elf|so)$/i.test(file.relative) || MODULE_DIRS.includes(path.dirname(file.relative))) {
+    if (isEntry || /\.(prx|sprx|elf|self|so)$/i.test(file.relative) || MODULE_DIRS.includes(path.dirname(file.relative))) {
       const header = await magic(isEntry ? entry : file.absolute);
-      if (selfMagic(header)) throw new Error('Module ' + file.relative + ' is a SELF file. Conversion requires decrypted ELF modules; its matching decrypted replacement is missing.');
-      if (elfMagic(header)) {
+      if (selfMagic(header)) {
+        const format = await inspectExecutable(isEntry ? entry : file.absolute);
+        if (!format.supported) throw new Error('Module ' + file.relative + ': ' + format.diagnostic);
+      }
+      if (elfMagic(header) || selfMagic(header)) {
         if (!isEntry) moduleDirs.add(path.dirname(file.relative));
         excluded.add(file.relative.toLowerCase());
         inputFiles.push(isEntry ? { absolute: entry, relative: file.relative, size: (await fs.stat(entry)).size } : file);

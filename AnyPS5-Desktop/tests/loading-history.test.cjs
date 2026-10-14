@@ -1,0 +1,60 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const os = require('node:os');
+const { createLoadingHistory } = require('../src/loading-history.cjs');
+
+const work = (now, elapsedMs, extra = {}) => ({ version: 1, updatedAt: now, elapsedMs, lastCompletedMs: 0, completed: 0, failed: 0, active: [1, 0, 0, 0], ...extra });
+const window = (now, frames) => ({ version: 1, updatedAt: now, frames, focused: false, x: 0, y: 0, width: 1000, height: 700 });
+test('loading history persists sampled timing, rejects stale intervals and keeps game sessions separate', async () => {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'anyps5-loading-history-'));
+  try {
+    const game = { id: 'game-a', title: 'Game A', executable: path.join(temporary, 'Game A', 'app.exe') };
+    const history = await createLoadingHistory(temporary, game);
+    assert.equal(history.previous, null);
+    await history.save();
+    await assert.rejects(fs.access(history.sessionPath), { code: 'ENOENT' });
+    const now = Date.now();
+    assert.equal(history.update(work(now, 1000), window(now, 10), now), true);
+    history.update(work(now + 1000, 2000), window(now + 1000, 11), now + 1000);
+    history.update(work(now + 2000, 3000, { completed: 2, lastCompletedMs: 2900 }), window(now + 2000, 12), now + 2000);
+    assert.equal(history.update(work(now + 2000, 3000), null, now + 6000), false);
+    history.update(work(now + 7000, 8000, { completed: 3, lastCompletedMs: 7900 }), window(now + 7000, 15), now + 7000);
+    history.update(work(now + 8000, 9000, { completed: 3, lastCompletedMs: 7900 }), window(now + 8000, 16), now + 8000);
+    await history.save();
+    await history.save();
+    let stored = JSON.parse(await fs.readFile(history.sessionPath, 'utf8'));
+    assert.equal(stored.status, 'running');
+    assert.equal(stored.endedAt, null);
+    assert.equal(stored.observedActiveMs, 3000);
+    assert.equal(stored.longestNoCompletionMs, 1000);
+    assert.equal(stored.lastCompletedMs, 7900);
+    assert.equal(stored.runtimeElapsedMs, 9000);
+    assert.equal(stored.frames, 16);
+    assert.equal(stored.metadata.title, 'Game A');
+    assert.equal((await fs.readdir(path.dirname(history.sessionPath))).filter(name => name.endsWith('.json')).length, 1);
+    const reopen = await createLoadingHistory(temporary, game);
+    assert.equal(reopen.previous.status, 'running');
+    assert.equal(reopen.previous.lastCompletedMs, 7900);
+    await history.stop('interrupted');
+    stored = JSON.parse(await fs.readFile(history.sessionPath, 'utf8'));
+    assert.equal(stored.status, 'interrupted');
+    assert.ok(stored.endedAt);
+    assert.equal(history.update(work(now + 9000, 10000), null, now + 9000), false);
+    const interrupted = await createLoadingHistory(temporary, game);
+    assert.equal(interrupted.previous.status, 'interrupted');
+    const other = await createLoadingHistory(temporary, { id: 'game-b', title: 'Game B', executable: path.join(temporary, 'Game B', 'app.exe') });
+    assert.equal(other.previous, null);
+    const sameExecutable = await createLoadingHistory(temporary, { executable: game.executable });
+    assert.equal(sameExecutable.previous.metadata.gameId, 'game-a');
+    const unknown = await createLoadingHistory(temporary);
+    assert.equal(unknown.previous, null);
+    await reopen.stop();
+    assert.equal((await fs.readdir(path.dirname(history.sessionPath))).filter(name => name.endsWith('.json')).length, 1);
+  } finally {
+    assert.equal(path.dirname(path.resolve(temporary)), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(temporary).startsWith('anyps5-loading-history-'));
+    await fs.rm(temporary, { recursive: true, force: true });
+  }
+});

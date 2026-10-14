@@ -17,8 +17,106 @@ bool _rangeFits(const std::uint64_t offset, const std::uint64_t length, const st
 }
 
 ElfReader::ElfReader(std::vector<std::uint8_t> fileBuffer)
-    : _fileBuffer(std::move(fileBuffer))
+    : _fileBuffer(DecodeExecutable(std::move(fileBuffer)))
 {
+}
+
+std::vector<std::uint8_t> ElfReader::DecodeExecutable(std::vector<std::uint8_t> bytes) {
+    const auto read = [&](std::uint64_t offset, unsigned size) {
+        if (!_rangeFits(offset, size, bytes.size())) throw RelinkerException("Truncated SELF container", offset);
+        std::uint64_t value = 0;
+        for (unsigned i = 0; i < size; ++i) value |= static_cast<std::uint64_t>(bytes[offset + i]) << (8 * i);
+        return value;
+    };
+    if (bytes.size() < 4 || (read(0, 4) != 0x1d3d154f && read(0, 4) != 0xeef51454)) return bytes;
+    if (bytes.size() < 32) throw RelinkerException("Truncated SELF header");
+    if (bytes[4] != 0 || bytes[6] != 1) throw RelinkerException("Unsupported SELF version or byte order");
+    const auto headerSize = read(12, 2);
+    const auto payloadStart = headerSize + read(14, 2);
+    const auto fileSize = read(16, 8);
+    const auto count = read(24, 2);
+    const auto elfOffset = 32 + count * 32;
+    if (fileSize > bytes.size() || payloadStart > fileSize || !_rangeFits(elfOffset, 64, headerSize))
+        throw RelinkerException("Invalid SELF header or file size");
+    if (read(elfOffset, 4) != 0x464c457f || read(elfOffset + 4, 3) != 0x010102 ||
+        read(elfOffset + 18, 2) != 62 || read(elfOffset + 20, 4) != 1 || read(elfOffset + 52, 2) != 64)
+        throw RelinkerException("SELF must contain a little-endian x86-64 ELF64 executable");
+    const auto phOffset = read(elfOffset + 32, 8);
+    const auto phCount = read(elfOffset + 56, 2);
+    if (phCount == 0 || read(elfOffset + 54, 2) != 56 || phOffset < 64 ||
+        !_rangeFits(phOffset, phCount * 56, headerSize - elfOffset))
+        throw RelinkerException("Invalid SELF embedded program headers");
+    const auto elfHeaderSize = phOffset + phCount * 56;
+    struct Range { std::uint64_t offset, size; };
+    struct Copy { std::uint64_t source, destination, size; };
+    std::vector<Range> programs;
+    std::vector<Range> covered{{0, elfHeaderSize}};
+    std::vector<Copy> copies{{elfOffset, 0, elfHeaderSize}};
+    std::vector<bool> seen(phCount, false);
+    std::vector<std::uint64_t> omittedMetadata;
+    std::uint64_t outputSize = elfHeaderSize;
+    constexpr std::uint64_t maxImageSize = 1ull << 30;
+    for (std::uint64_t i = 0; i < phCount; ++i) {
+        const auto ph = elfOffset + phOffset + i * 56;
+        const auto offset = read(ph + 8, 8);
+        const auto size = read(ph + 32, 8);
+        if (size && !_rangeFits(offset, size, maxImageSize)) throw RelinkerException("SELF reconstructed ELF exceeds the 1 GiB limit");
+        programs.push_back({offset, size});
+    }
+    for (std::uint64_t i = 0; i < count; ++i) {
+        const auto entry = 32 + i * 32;
+        const auto flags = read(entry, 8);
+        const auto source = read(entry + 8, 8);
+        const auto size = read(entry + 16, 8);
+        if (!_rangeFits(source, size, fileSize) || (size && source < payloadStart))
+            throw RelinkerException("SELF segment is outside the payload", entry);
+        if ((flags & 0x800) == 0) continue;
+        if (flags & 2) throw RelinkerException("Encrypted SELF payload: provide a decrypted ELF or unencrypted SELF; AnyPS5 cannot decrypt this file");
+        if (flags & 8) throw RelinkerException("Compressed SELF payload is not supported yet; provide its uncompressed SELF or ELF counterpart");
+        if (flags & 0xf0000) throw RelinkerException("Unsupported SELF data segment flags", entry);
+        const auto index = (flags >> 20) & 0xffff;
+        if (index >= programs.size() || seen[index]) throw RelinkerException("Invalid or duplicate SELF program segment index", entry);
+        seen[index] = true;
+        const auto destination = programs[index].offset;
+        if (size != read(entry + 24, 8) || size != programs[index].size)
+            throw RelinkerException("SELF payload size does not match its ELF program segment", entry);
+        if (size == 0) continue;
+        for (const auto& previous : copies) {
+            const auto first = std::max(destination, previous.destination);
+            const auto last = std::min(destination + size, previous.destination + previous.size);
+            if (first < last && !std::equal(bytes.begin() + source + first - destination,
+                    bytes.begin() + source + last - destination, bytes.begin() + previous.source + first - previous.destination))
+                throw RelinkerException("Conflicting SELF payload mappings", entry);
+        }
+        copies.push_back({source, destination, size});
+        covered.push_back({destination, size});
+        outputSize = std::max(outputSize, destination + size);
+    }
+    std::sort(covered.begin(), covered.end(), [](const auto& a, const auto& b) { return a.offset < b.offset; });
+    for (std::size_t i = 0; i < programs.size(); ++i) {
+        const auto& program = programs[i];
+        if (program.size == 0) continue;
+        auto end = program.offset;
+        for (const auto& range : covered) {
+            if (range.offset > end) break;
+            end = std::max(end, range.offset + range.size);
+        }
+        if (end < program.offset + program.size) {
+            const auto ph = elfOffset + phOffset + i * 56;
+            const auto type = read(ph, 4);
+            if ((type == 4 || type == 0x6fffff01) && read(ph + 16, 8) == 0 && !seen[i]) omittedMetadata.push_back(phOffset + i * 56);
+            else throw RelinkerException("SELF is missing an ELF program segment payload", program.offset);
+        }
+    }
+    std::vector<std::uint8_t> result(outputSize);
+    for (const auto& copy : copies) std::copy_n(bytes.begin() + copy.source, copy.size, result.begin() + copy.destination);
+    std::fill_n(result.begin() + 40, 8, 0);
+    std::fill_n(result.begin() + 58, 6, 0);
+    for (const auto ph : omittedMetadata) {
+        std::fill_n(result.begin() + ph + 8, 8, 0);
+        std::fill_n(result.begin() + ph + 32, 16, 0);
+    }
+    return result;
 }
 
 const std::vector<std::uint8_t>& ElfReader::GetRawBytes() const {
@@ -73,11 +171,6 @@ std::uint64_t ElfReader::_readU64At(FileByteOffset fileByteOffset) const {
 ElfHeader ElfReader::ReadHeader() const {
     if (_fileBuffer.size() < 0x40) {
         throw RelinkerException("File too small for ELF header");
-    }
-
-    const std::uint32_t magic = _readU32At(0);
-    if (magic == 0x1d3d154f || magic == 0xeef51454) {
-        throw RelinkerException("The input is a SELF container, not an ELF");
     }
 
     if (_fileBuffer[0] != 0x7f || _fileBuffer[1] != 'E' ||

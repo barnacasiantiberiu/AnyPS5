@@ -101,7 +101,7 @@ function relativePath(root, file) {
   return path.relative(root, file).split(path.sep).join('\\');
 }
 function entryParts(entry) {
-  if (typeof entry !== 'string' || !entry.trim()) throw new Error('Choose a decrypted ELF executable inside the ISO.');
+  if (typeof entry !== 'string' || !entry.trim()) throw new Error('Choose an ELF or unencrypted SELF executable inside the ISO.');
   if (path.win32.isAbsolute(entry) || path.posix.isAbsolute(entry) || /[:\x00-\x1f]/.test(entry)) {
     throw new Error('The ISO executable must be a relative path inside the image.');
   }
@@ -109,7 +109,7 @@ function entryParts(entry) {
   if (parts.some(part => !part || part === '..' || part === '.' || /[. ]$/.test(part))) throw new Error('The ISO executable path contains an invalid or parent-directory component.');
   return parts;
 }
-const pkgDiagnostic = location => 'This ISO contains PKG packages' + (location ? ' in ' + location : '') + ', not an extracted game folder. Extracted game files with a decrypted ELF executable are required; PKG extraction and decryption are not supported.';
+const pkgDiagnostic = location => 'This ISO contains PKG packages' + (location ? ' in ' + location : '') + ', not an extracted game folder. Extracted game files with an ELF or unencrypted SELF executable are required; PKG extraction and decryption are not supported.';
 async function inspectVolume(root) {
   const inspection = await inspectSource(root);
   if (!within(root, inspection.source)) throw new Error('The detected game folder is outside the mounted ISO volume.');
@@ -134,7 +134,7 @@ async function inspectVolume(root) {
       const directory = path.join(app, child.name);
       const childEntries = await fs.readdir(directory, { withFileTypes: true });
       if (childEntries.some(entry => entry.isFile() && /\.pkg$/i.test(entry.name))) packageLocation ??= relativePath(root, directory);
-      const hasExecutable = childEntries.some(entry => entry.isFile() && (/\.elf$/i.test(entry.name) || /^(eboot\.bin|eboot)$/i.test(entry.name)));
+      const hasExecutable = childEntries.some(entry => entry.isFile() && (/\.(elf|self)$/i.test(entry.name) || /^(eboot\.bin|eboot)$/i.test(entry.name)));
       if (!hasExecutable) continue;
       const game = await inspectSource(directory);
       if (!within(root, game.source)) throw new Error('The detected game folder is outside the mounted ISO volume.');

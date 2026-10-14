@@ -8,7 +8,8 @@ const crypto = require('node:crypto');
 const { inspectSource, checkEntry, validate, install, DLLS } = require('../src/installer.cjs');
 
 const ELF = Buffer.from([127, 69, 76, 70, 2, 1, 1, 9]);
-const SELF = Buffer.from([0x54, 0x14, 0xf5, 0xee, 0, 1, 1, 0x12]);
+const { selfExecutable } = require('./fixtures/self.cjs');
+const SELF = selfExecutable();
 const PS4_SELF = Buffer.from([0x4f, 0x15, 0x3d, 0x1d, 0, 1, 1, 0x12]);
 const PE = Buffer.alloc(256);
 PE.write('MZ');
@@ -131,19 +132,20 @@ test('wrapper search is bounded and never chooses among multiple child folders',
 
 test('entry diagnostics distinguish SELF, invalid format and outside the resource root', async t => {
   const request = await fixture(t);
-  await assert.rejects(checkEntry({ source: request.source, entry: path.join(request.source, 'eboot.bin') }), /SELF executable.*decrypted ELF counterpart/);
+  await assert.rejects(checkEntry({ source: request.source, entry: path.join(request.source, 'eboot.bin') }), /Encrypted SELF payload.*decrypted ELF/);
   const invalid = path.join(request.source, 'invalid.elf');
   await fs.writeFile(invalid, Buffer.from('not an ELF'));
-  await assert.rejects(checkEntry({ source: request.source, entry: invalid }), /not a recognized ELF executable/);
+  await assert.rejects(checkEntry({ source: request.source, entry: invalid }), /Not a recognized ELF or SELF executable/);
   const outside = path.join(request.root, 'outside.elf');
   await fs.writeFile(outside, ELF);
   await assert.rejects(checkEntry({ source: request.source, entry: outside }), /outside the game folder/);
   assert.equal(await checkEntry({ source: request.source, entry: request.entry }), request.entry);
   const selfOnly = path.join(request.root, 'Encrypted only');
   await writeFile(path.join(selfOnly, 'eboot.bin'), SELF);
+  await writeFile(path.join(selfOnly, 'a-invalid.elf'), Buffer.from('invalid executable'));
   const encrypted = await inspectSource(selfOnly);
   assert.equal(encrypted.encrypted, true);
-  assert.match(encrypted.diagnostic, /SELF file.*cannot decrypt/);
+  assert.match(encrypted.diagnostic, /Encrypted SELF payload.*cannot decrypt/);
 });
 
 test('overlay installation stages decrypted bytes and resources, preserves guest output and all originals', async t => {
@@ -199,7 +201,7 @@ test('a module with no decrypted counterpart fails before copying or publication
   const request = await fixture(t);
   await fs.unlink(path.join(request.overlay, 'sce_module', 'game.prx'));
   const before = await snapshot(request.wrapper);
-  await assert.rejects(install(request, { run: async () => assert.fail('converter must not start') }), /game\.prx.*SELF.*matching decrypted replacement is missing/);
+  await assert.rejects(install(request, { run: async () => assert.fail('converter must not start') }), /game\.prx.*Encrypted SELF payload/);
   await assertSourceUnchanged(request, before);
   await assertNoPublish(request);
 });

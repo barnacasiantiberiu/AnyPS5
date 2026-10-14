@@ -36,3 +36,18 @@ test('no false shader state for missing data or malformed snapshots', () => {
   assert.equal(validWindow(window(start, { width: Infinity })), false);
   assert.equal(validWindow(window(start, { width: 0 })), false);
 });
+
+test('compilation stays visible during moving frames and settles after the last batch', () => {
+  const model = new LoadingModel();
+  model.update(work(start), window(start), start);
+  let state = model.update(work(start + 1500), window(start + 1500, { frames: 11 }), start + 1500);
+  assert.equal(state.visible, true);
+  assert.equal(state.active, 1);
+  assert.equal(state.elapsed, 1);
+  state = model.update(work(start + 2000, { active: [0, 0, 0, 0], completed: 3, lastCompletedMs: 1900 }), window(start + 2000, { frames: 12 }), start + 2000);
+  assert.equal(state.title, 'Compilation idle');
+  assert.equal(state.warning, false);
+  assert.equal(state.quietSeconds, 0);
+  state = model.update(work(start + 6500, { active: [0, 0, 0, 0], completed: 3, lastCompletedMs: 1900 }), window(start + 6500, { frames: 25 }), start + 6500);
+  assert.equal(state.visible, false);
+});

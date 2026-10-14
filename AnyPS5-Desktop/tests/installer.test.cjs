@@ -71,10 +71,36 @@ test('rejects ELF outside the source root', async t => {
   await assert.rejects(validate(request), /outside the game folder/);
 });
 test('rejects an encrypted executable and encrypted modules', async t => {
-  const request = await fixture(t); const self = Buffer.from([0x4f, 0x15, 0x3d, 0x1d]);
+  const request = await fixture(t); const self = require('./fixtures/self.cjs').selfExecutable();
   await fs.writeFile(request.entry, self); await assert.rejects(validate(request), /decrypted ELF/);
   await fs.writeFile(request.entry, ELF); await fs.writeFile(path.join(request.source, 'sce_module', 'game.prx'), self);
-  await assert.rejects(validate(request), /is a SELF file/);
+  await assert.rejects(validate(request), /Encrypted SELF payload/);
+});
+
+test('installs unencrypted SELF inputs and preserves backups as resources', async t => {
+  const request = await fixture(t);
+  const { selfExecutable } = require('./fixtures/self.cjs');
+  const main = selfExecutable({ encrypted: false });
+  await fs.writeFile(request.entry, main);
+  const module = path.join(request.source, 'sce_module', 'game.prx');
+  await fs.writeFile(module, selfExecutable({ encrypted: false, ps5: false }));
+  await fs.writeFile(module + '.esbak', ELF);
+  const inspection = await inspectSource(request.source);
+  assert.equal(inspection.entry, request.entry);
+  assert.equal(inspection.encrypted, false);
+  const plan = await validate(request);
+  assert.equal(plan.inputFiles.some(file => file.relative.endsWith('.esbak')), false);
+  let called = false;
+  const result = await install(request, { run: async (exe, args, options, log) => {
+    called = true;
+    assert.deepEqual(await fs.readFile(args.at(-2)), main);
+    await fakeRun(exe, args, options, log);
+  } });
+  assert.equal(called, true);
+  assert.deepEqual(await fs.readFile(request.entry), main);
+  assert.deepEqual(await fs.readFile(path.join(result.directory, 'app0', 'sce_module', 'game.prx.esbak')), ELF);
+  await fs.writeFile(request.entry, selfExecutable({ encrypted: false, compressed: true }));
+  await assert.rejects(validate(request), /Compressed SELF payload/);
 });
 test('requires Windows libraries and the three MinGW dependencies', async t => {
   const request = await fixture(t); await fs.writeFile(path.join(request.libs, 'libkernel.prx'), ELF);

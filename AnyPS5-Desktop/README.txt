@@ -1,4 +1,4 @@
-AnyPS5 Desktop 0.5.0 — Windows x64
+AnyPS5 Desktop 0.6.0 — Windows x64
 
 START THE APPLICATION
 Open dist\AnyPS5 Desktop-win32-x64\AnyPS5 Desktop.exe.
@@ -91,7 +91,7 @@ CONVERSION
 2. Select the libraries in build\core\libs\libs (not unpatched).
 3. If the three MinGW DLLs are not in libs, select the bin folder of the
    toolchain used to compile those libraries.
-4. Choose the game data folder or an ISO image and its decrypted ELF executable. A single outer
+4. Choose the game data folder or an ISO image and its ELF or unencrypted, uncompressed SELF executable. A single outer
    wrapper folder is detected automatically. For a recognized decrypted subfolder,
    the original game resources are combined with matching decrypted ELF binaries
    in a temporary installation folder; source files stay unchanged.
@@ -156,6 +156,10 @@ repository. ANYPS5_TEST_GCC can select another gcc.exe. ANYPS5_TEST_APP can sele
 the packaged application executable. Test screenshots are stored in artifacts.
 
 LIMITATIONS
+Unencrypted, uncompressed SELF executables and modules are accepted alongside
+ELF files. No manual extension change or separate extraction is required.
+Encrypted SELF payloads still require a decrypted counterpart; compressed SELF
+payloads are not supported yet. Container support does not prove game compatibility.
 The interface recreates the PS5 game-menu layout with original components and
 Windows fonts. It does not include PSN, Store, trophies, DRM, ISO/PKG/SELF decryption,
 automatic engine updates or game compatibility verification.
@@ -163,5 +167,66 @@ A successful conversion means that the relinker completed and files were arrange
 missing engine functionality may still prevent a game from running.
 
 References:
-https://github.com/boykopovar/AnyPS5/blob/main/docs/user/USAGE.md
+https://github.com/barnacasiantiberiu/AnyPS5/blob/main/docs/user/USAGE.md
 https://blog.playstation.com/2020/10/15/first-look-playstation-5s-next-generation-user-experience/
+
+Shader loading overlay and timing history
+
+Launching a game from Desktop or a newly created Desktop shortcut enables the overlay automatically. It stays visible
+while compilation is active, including when frames continue. It shows completed
+steps, active work, renderer elapsed time and time since the last completion.
+The total number of future shaders is unknown; no percentage or ETA is inferred.
+A quiet compiler or stale heartbeat is reported as a possible stall, not proof.
+
+Loading timings are saved locally every two seconds and on game exit under
+portable-data/loading-history (or the configured Desktop data directory).
+Each session JSON keeps renderer timing, completed/failed counts, observed active
+time and exit status. The last completion time includes pauses between batches;
+it is neither summed CPU compilation time nor guaranteed game-ready time.
+The overlay compares the previous observed run for the same executable. Cache,
+driver and scene differences can change the amount of work between launches.
+Closing the monitor leaves partial history; the game may discover more shaders.
+
+For a direct performance launch with inherited environment and unchanged game
+settings, use: "AnyPS5 Desktop.exe" --loading-game "absolute/path/to/app.exe"
+Keep this helper running for the overlay and timing collection. Direct app.exe
+launches do not create a monitor. The --loading-game helper does not prepare
+Desktop input or resolution settings; supply the desired runtime environment.
+
+From a development terminal, use npm start instead of invoking Electron directly.
+Some editor terminals inherit ELECTRON_RUN_AS_NODE=1, which prevents Electron from
+starting its GUI. scripts/launch.cjs removes that variable only for the child
+process, preserving the parent environment and game performance settings.
+
+To launch a game with the overlay from the source checkout:
+  npm start -- --loading-game "absolute/path/to/app.exe"
+
+Set ANYPS5_DESKTOP_EXE to an absolute packaged Desktop executable path to use that
+package with the same command. ANYPS5_DESKTOP_DATA can select the profile directory.
+Direct game executable launches still do not create an overlay monitor. Launch
+through Desktop or its loading-game entry point and keep the helper running.
+
+BUILD FROM SOURCE
+The complete launcher source now lives in AnyPS5-Desktop/ in the AnyPS5 repository.
+Install Node.js 22.12 or newer. In this directory run npm ci, then npm start or
+npm run package. The dependency lockfile is included. Engine binaries must be
+built and configured separately. Generated packages, node_modules, game files
+and personal profiles are not committed. See ../docs/user/DESKTOP.md.
+
+ELF AND SELF INPUT
+ELF and unencrypted, uncompressed SELF executables and modules are accepted.
+The original source files are preserved. An encrypted SELF entry displays:
+
+Encrypted SELF payload. Select a decrypted ELF or unencrypted SELF counterpart; AnyPS5 cannot decrypt this file.
+
+Continue stays disabled until a supported entry is selected. An encrypted module
+stops installation and identifies the affected file. Compressed SELF input gets
+a separate diagnostic. Renaming a SELF to .elf does not decrypt it.
+Use a relinker built from this revision or newer for SELF support.
+
+FOCUSED CHECKS
+npm run test:self checks folder/ISO inspection and installation validation.
+npm run test:self-ui checks visible encrypted-input guidance, disabled Continue
+and recovery after selecting a plain SELF, for both container signatures.
+npm run test:loading and npm run test:loading-ui check overlay state and history.
+Windows/Linux parser tests do not establish Linux Desktop game compatibility.
