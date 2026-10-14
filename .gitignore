@@ -99,6 +99,8 @@ downloads/
 
 *.json
 !demo/web/i18n/*.json
+!/AnyPS5-Desktop/package.json
+!/AnyPS5-Desktop/package-lock.json
 
 !/assets/*.jpg
 !/assets/*.png

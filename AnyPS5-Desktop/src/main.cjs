@@ -126,7 +126,7 @@ function registerHandlers() {
       relinker: { title: 'Choose relinker.exe for Windows', properties: ['openFile'], filters: [{ name: 'Windows executable', extensions: ['exe'] }] },
       libs: { title: 'Choose the AnyPS5 libraries built for Windows', properties: ['openDirectory'] },
       dllDirectory: { title: 'Choose the bin folder containing the MinGW DLLs', properties: ['openDirectory'] },
-      entry: { title: 'Choose the decrypted ELF executable', properties: ['openFile'], filters: [{ name: 'PS5 executable', extensions: ['elf', 'bin'] }, { name: 'All files', extensions: ['*'] }] },
+      entry: { title: 'Choose the ELF or unencrypted SELF executable', properties: ['openFile'], filters: [{ name: 'PS5 executable', extensions: ['elf', 'self', 'bin'] }, { name: 'All files', extensions: ['*'] }] },
       converted: { title: 'Choose a converted game folder', properties: ['openDirectory'] }
     };
     if (!Object.hasOwn(configs, type)) throw new Error('Unknown selection.');
@@ -206,12 +206,12 @@ function registerHandlers() {
       const settings = (await loadState()).settings;
       const input = await prepareInput(executable, app.getPath('userData'), settings.input);
       const graphics = await prepareGraphics(executable, settings.graphics);
-      loading = await createLoadingOverlay(app.getPath('userData'));
+      loading = await createLoadingOverlay(app.getPath('userData'), { gameId: game.id, title: game.title, executable });
       loadingOverlays.add(loading);
       await new Promise((resolve, reject) => {
         const child = spawn(executable, [], { cwd: game.directory, env: { ...input.env, ANYPS5_LOADING_STATUS: loading.statusPath }, detached: true, stdio: 'ignore', shell: false });
         child.once('error', reject);
-        child.once('exit', () => { runningGames.delete(executable); loadingOverlays.delete(loading); loading.stop().catch(() => {}); });
+        child.once('exit', (code, signal) => { runningGames.delete(executable); loading.stop(true, code === 0 && !signal ? 'exited' : 'interrupted').finally(() => loadingOverlays.delete(loading)).catch(() => {}); });
         child.once('spawn', () => { started = true; child.unref(); resolve(); });
       });
       await updateState(state => { state.games.find(g => g.id === id).lastPlayed = new Date().toISOString(); });
@@ -219,7 +219,7 @@ function registerHandlers() {
     } finally {
       if (!started) {
         runningGames.delete(executable);
-        if (loading) { loadingOverlays.delete(loading); await loading.stop(); }
+        if (loading) { loadingOverlays.delete(loading); await loading.stop(true, 'launch-failed'); }
       }
     }
   });
@@ -233,7 +233,8 @@ function registerHandlers() {
     if (await fs.access(file).then(() => true, () => false)) throw new Error('A shortcut with this name already exists on your desktop. It has not been replaced.');
     const executable = path.join(game.directory, game.executable);
     await requirePe(executable, 'The game');
-    if (!shell.writeShortcutLink(file, 'create', { target: executable, cwd: game.directory, description: game.title, icon: executable, iconIndex: 0 })) throw new Error('The shortcut could not be created.');
+    const args = `${app.isPackaged ? '' : `"${app.getAppPath()}" `}--loading-game "${executable}"`;
+    if (!shell.writeShortcutLink(file, 'create', { target: app.getPath('exe'), args, cwd: game.directory, description: game.title, icon: executable, iconIndex: 0 })) throw new Error('The shortcut could not be created.');
     return file;
   });
   handle('game:remove', async id => {
@@ -279,10 +280,16 @@ async function createWindow() {
   window.on('leave-full-screen', () => window.webContents.send('window:fullscreen-changed', false));
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
+  let closing = false;
   window.on('close', event => {
     if (!activeJob) {
-      for (const loading of loadingOverlays) loading.stop(false).catch(() => {});
-      loadingOverlays.clear();
+      if (closing) { event.preventDefault(); return; }
+      if (loadingOverlays.size) {
+        event.preventDefault();
+        closing = true;
+        Promise.allSettled([...loadingOverlays].map(loading => loading.stop(false))).finally(() => window.destroy());
+        loadingOverlays.clear();
+      }
       return;
     }
     event.preventDefault();
@@ -290,5 +297,16 @@ async function createWindow() {
   });
   await window.loadFile(rendererPath);
 }
-app.whenReady().then(() => { registerHandlers(); return createWindow(); }).catch(error => { dialog.showErrorBox('AnyPS5 Desktop', error.message); app.quit(); });
+app.whenReady().then(async () => {
+  const launchIndex = process.argv.indexOf('--loading-game');
+  if (launchIndex !== -1) {
+    const executable = process.argv[launchIndex + 1];
+    if (!executable || !path.isAbsolute(executable)) throw new Error('--loading-game requires an absolute game executable path.');
+    await requirePe(executable, 'The game');
+    const { launchWithLoadingOverlay } = require('./loading-launcher.cjs');
+    return launchWithLoadingOverlay(executable, app.getPath('userData'));
+  }
+  registerHandlers();
+  return createWindow();
+}).catch(error => { dialog.showErrorBox('AnyPS5 Desktop', error.message); app.quit(); });
 app.on('window-all-closed', () => app.quit());

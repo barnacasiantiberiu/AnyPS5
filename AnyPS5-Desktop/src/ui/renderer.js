@@ -372,7 +372,7 @@ function showSourceDetails() {
   show('folder-entry-field', !iso); show('iso-entry-select', iso);
   const select = $('iso-entry-select'); select.replaceChildren();
   if (iso) {
-    const placeholder = new Option(source.executables.length ? 'Choose a decrypted ELF executable' : 'No decrypted ELF executable found', '');
+    const placeholder = new Option(source.executables.length ? 'Choose an ELF or unencrypted SELF executable' : 'No supported ELF or SELF executable found', '');
     placeholder.disabled = true; select.append(placeholder);
     for (const entry of source.executables) select.append(new Option(entry, entry));
     select.value = source.entry || '';
@@ -380,7 +380,7 @@ function showSourceDetails() {
   const note = iso ? [source.note || 'ISO image · opened read-only. Your original image stays unchanged.', source.cleanupWarning].filter(Boolean).join(' ') : source.note || '';
   $('source-note').textContent = note; show('source-note', !!note);
   show('source-summary'); show('source-details');
-  error(source.diagnostic || (source.encrypted ? 'The executable is not a decrypted ELF file. AnyPS5 cannot decrypt SELF files.' : !source.entry ? iso ? 'Choose a decrypted ELF executable from the image. Encrypted disc images and PKG files cannot be decrypted by AnyPS5.' : 'No executable was found automatically. Select an ELF file below.' : ''));
+  error(source.diagnostic || (source.encrypted ? 'The SELF payload is encrypted. Select a decrypted ELF or unencrypted SELF counterpart.' : !source.entry ? iso ? 'Choose an ELF or unencrypted SELF executable from the image. Encrypted disc images and PKG files cannot be decrypted by AnyPS5.' : 'No executable was found automatically. Select an ELF or unencrypted SELF file below.' : ''));
 }
 async function chooseSource(kind) {
   if (sourceBusy) return;

@@ -6,6 +6,14 @@ Includes a [relinker](core/relinker) that converts executable to the target syst
 
 [Usage](docs/user/USAGE.md), [Build instructions](docs/dev/BUILD.md), [Architecture](docs/dev/ARCHITECTURE.md), [Technical debt of the project](docs/dev/TechnicalDebt.md), [code style conventions](docs/dev/CONVENTIONS.md), [contributing](CONTRIBUTING.md)
 
+## Executable input and Desktop
+
+The relinker and [AnyPS5 Desktop](AnyPS5-Desktop) accept ELF files and **unencrypted, uncompressed SELF** containers, including `eboot.bin` and bundled modules. SELF data is reconstructed in memory; original game files are preserved.
+
+**Encrypted SELF files cannot be decrypted by AnyPS5.** Desktop displays an error before conversion and disables Continue for an encrypted entry point: "Encrypted SELF payload. Select a decrypted ELF or unencrypted SELF counterpart; AnyPS5 cannot decrypt this file." Encrypted modules also stop conversion with the affected file name. Compressed SELF payloads receive a separate unsupported-format message. Renaming a SELF to `.elf` does not decrypt it.
+
+The complete Desktop source, dependency lockfile and functional tests are in [`AnyPS5-Desktop/`](AnyPS5-Desktop). Its shader-loading overlay and local timing history are included. See the [Desktop guide](docs/user/DESKTOP.md) for setup and [SELF input notes](docs/dev/SelfInput.md) for validation and limitations. Successful input validation does not establish that a game will run; system-library and shader export coverage are unchanged.
+
 ## Status
 
 <!-- anyps5-status:start -->

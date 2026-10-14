@@ -10,9 +10,10 @@
 <body>
 <main aria-live="polite">
   <header><span class="brand">ANY<span>PS5</span></span><span class="badge"><i></i><span id="activity">RENDERER ACTIVITY</span></span></header>
-  <div class="heading"><h1 id="title">Preparing graphics</h1><span id="elapsed">0s</span></div>
+  <div class="heading"><h1 id="title">Preparing graphics</h1><span id="elapsed" title="Time since renderer reporting started">0s</span></div>
   <p id="detail">Waiting for renderer activity.</p>
   <div class="track" role="progressbar" aria-label="Compilation activity; total unknown"><div></div></div>
+  <div class="timing"><span id="last-progress">Waiting for progress</span><span id="previous">Timing history starts with this run</span></div>
   <footer><span><strong id="completed">0</strong> compile steps completed</span><span id="note">Total discovered during play</span></footer>
 </main>
 <script src="loading.js"></script>

@@ -1,7 +1,11 @@
 #include <relinker/parsing/ElfReader.hpp>
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <fstream>
+#include <filesystem>
+#include <iterator>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -58,6 +62,34 @@ void Require(const bool condition) {
     if (!condition) throw std::runtime_error("Unexpected parsed value");
 }
 
+Bytes SelfFixture(std::uint32_t magic = 0xeef51454) {
+    const auto elf = Fixture();
+    Bytes bytes(0x180);
+    Write(bytes, 0, magic);
+    bytes[5] = 1; bytes[6] = 1; bytes[7] = 0x12;
+    Write<std::uint16_t>(bytes, 12, 0x100);
+    Write<std::uint16_t>(bytes, 14, 0x40);
+    Write<std::uint64_t>(bytes, 16, bytes.size());
+    Write<std::uint16_t>(bytes, 24, 2);
+    Write<std::uint64_t>(bytes, 32, 0x110004);
+    Write<std::uint64_t>(bytes, 40, 0x140);
+    Write<std::uint64_t>(bytes, 48, 32);
+    Write<std::uint64_t>(bytes, 56, 32);
+    Write<std::uint64_t>(bytes, 64, 0x2804);
+    Write<std::uint64_t>(bytes, 72, 0x160);
+    Write<std::uint64_t>(bytes, 80, 32);
+    Write<std::uint64_t>(bytes, 88, 32);
+    std::copy_n(elf.begin(), 120, bytes.begin() + 96);
+    for (unsigned i = 0; i < 32; ++i) bytes[0x160 + i] = static_cast<std::uint8_t>(i + 1);
+    return bytes;
+}
+
+void RejectSelf(Bytes bytes, const std::string& reason) {
+    try { Relinker::ElfReader::DecodeExecutable(std::move(bytes)); }
+    catch (const Relinker::RelinkerException& error) { Require(std::string(error.what()).find(reason) != std::string::npos); return; }
+    throw std::runtime_error("Invalid SELF was accepted");
+}
+
 void RejectSections(Bytes bytes) {
     try {
         Relinker::ElfReader(std::move(bytes)).ReadSectionHeaders();
@@ -78,8 +110,31 @@ void RejectAddress(Bytes bytes, const std::uint64_t address) {
 
 }
 
-int main() {
+int main(int argc, char** argv) {
     const std::vector<std::pair<std::string, std::function<void()>>> cases = {
+        {"SELF segment reconstruction for both container signatures", [] {
+            for (const auto magic : {0xeef51454u, 0x1d3d154fu}) {
+                const Relinker::ElfReader reader(SelfFixture(magic));
+                const auto headers = reader.ReadProgramHeaders();
+                Require(headers.size() == 1 && headers[0].Offset == 0x240 && headers[0].MemorySize == 64);
+                const auto payload = reader.ReadSegment(headers[0]);
+                Require(payload.size() == 32 && payload.front() == 1 && payload.back() == 32);
+                Require(reader.ReadSectionHeaders().empty());
+                Require(reader.TranslateVirtualAddress(0x1010) == 0x250);
+            }
+            Require(Relinker::ElfReader::DecodeExecutable(Fixture()) == Fixture());
+        }},
+        {"SELF encryption, compression and malformed bounds", [] {
+            auto bytes = SelfFixture(); Write<std::uint64_t>(bytes, 64, 0x2806); RejectSelf(bytes, "Encrypted SELF payload");
+            bytes = SelfFixture(); Write<std::uint64_t>(bytes, 64, 0x280c); RejectSelf(bytes, "Compressed SELF payload");
+            bytes = SelfFixture(); bytes.resize(30); RejectSelf(bytes, "Truncated SELF");
+            bytes = SelfFixture(); bytes.pop_back(); RejectSelf(bytes, "file size");
+            bytes = SelfFixture(); Write<std::uint64_t>(bytes, 72, UINT64_MAX); RejectSelf(bytes, "outside the payload");
+            bytes = SelfFixture(); Write<std::uint64_t>(bytes, 64, 0x102804); RejectSelf(bytes, "segment index");
+            bytes = SelfFixture(); Write<std::uint64_t>(bytes, 88, 31); RejectSelf(bytes, "payload size");
+            bytes = SelfFixture(); Write<std::uint64_t>(bytes, 96 + 72, UINT64_MAX); RejectSelf(bytes, "1 GiB limit");
+            bytes = SelfFixture(); Write<std::uint64_t>(bytes, 64, 4); RejectSelf(bytes, "missing an ELF program segment");
+        }},
         {"section entry size field", [] {
             const auto sections = Relinker::ElfReader(Fixture()).ReadSectionHeaders();
             Require(sections.size() == 3 && sections[1].Name == ".text" && sections[1].EntrySize == 24);
@@ -224,6 +279,29 @@ int main() {
             ++failures;
             std::cerr << "FAIL: " << name << ": " << error.what() << '\n';
         }
+    }
+    for (int i = 1; i < argc; ++i) {
+        try {
+            const auto read = [](const std::filesystem::path& file) {
+                std::ifstream stream(file, std::ios::binary);
+                if (!stream) throw std::runtime_error("Cannot read sample input");
+                return Bytes(std::istreambuf_iterator<char>(stream), {});
+            };
+            const auto file = std::filesystem::u8path(argv[i]);
+            const Relinker::ElfReader reader(read(file));
+            for (const auto& ph : reader.ReadProgramHeaders()) if (ph.FileSize) reader.ReadSegment(ph);
+            auto backup = file; backup += ".esbak";
+            if (std::filesystem::exists(backup)) {
+                const Relinker::ElfReader original(read(backup));
+                const auto reference = original.ReadProgramHeaders();
+                const auto actual = reader.ReadProgramHeaders();
+                Require(actual.size() == reference.size());
+                for (std::size_t j = 0; j < actual.size(); ++j) {
+                    if (actual[j].Type == 1) Require(reader.ReadSegment(actual[j]) == original.ReadSegment(reference[j]));
+                }
+            }
+            std::cout << "PASS: SELF sample payloads " << argv[i] << '\n';
+        } catch (const std::exception& error) { ++failures; std::cerr << "FAIL: SELF sample: " << error.what() << '\n'; }
     }
     return failures == 0 ? 0 : 1;
 }

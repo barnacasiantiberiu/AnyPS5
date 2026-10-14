@@ -11,7 +11,8 @@
 
 namespace Relinker {
 
-std::vector<std::string> GuestImageReader::ReadModuleNames(const std::vector<std::uint8_t>& bytes) const {
+std::vector<std::string> GuestImageReader::ReadModuleNames(const std::vector<std::uint8_t>& input) const {
+    const auto bytes = ElfReader::DecodeExecutable(input);
     if (bytes.size() < 64 || Io::ReadU32(bytes, 0) != 0x464c457f || bytes[4] != 2 || bytes[5] != 1 || bytes[6] != 1 || Io::ReadU16(bytes, 18) != 62)
         throw Domain::RelinkerException("Expected little-endian ELF64 x86-64 module metadata");
     const auto type = Io::ReadU16(bytes, 16);
@@ -88,6 +89,7 @@ std::vector<std::string> GuestImageReader::ReadModuleNames(const std::vector<std
 }
 
 GuestImage GuestImageReader::Read(const std::filesystem::path& path, std::vector<std::uint8_t> bytes, const bool windows) const {
+    bytes = ElfReader::DecodeExecutable(std::move(bytes));
     const auto fail = [&](const std::string& message) { throw Domain::RelinkerException(path.string() + ": " + message); };
     const auto range = [&](std::uint64_t offset, std::uint64_t size) {
         if (offset > bytes.size() || size > bytes.size() - offset) {
